@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -153,20 +154,41 @@ class MaxBot:
                     marker=marker,
                     timeout_seconds=self._settings.max_poll_timeout_seconds,
                 )
-                marker = data.get("marker", marker)
-                for update in data.get("updates", []):
-                    await self.handle_update(update)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 429:
                     retry_after = retry_after_seconds(exc.response)
                     logger.warning("MAX rate limit reached, sleeping %.1f seconds", retry_after)
                     await asyncio.sleep(retry_after)
                     continue
-                logger.exception("MAX polling iteration failed")
+                logger.error(
+                    "MAX get_updates failed: HTTP %s %s",
+                    exc.response.status_code,
+                    response_detail(exc.response),
+                )
                 await asyncio.sleep(3)
+                continue
             except Exception:
-                logger.exception("MAX polling iteration failed")
+                logger.exception("MAX get_updates failed")
                 await asyncio.sleep(3)
+                continue
+
+            # Каждый апдейт обрабатываем отдельно: сбой на одном не должен
+            # выбрасывать нас из пачки и не должен уносить остальные вместе с
+            # уже сдвинутым marker — иначе сообщения теряются безвозвратно.
+            for update in data.get("updates", []):
+                try:
+                    await self.handle_update(update)
+                except httpx.HTTPStatusError as exc:
+                    logger.error(
+                        "MAX update handling failed: HTTP %s %s | update=%s",
+                        exc.response.status_code,
+                        response_detail(exc.response),
+                        update,
+                    )
+                except Exception:
+                    logger.exception("MAX update handling failed: update=%s", update)
+
+            marker = data.get("marker", marker)
 
 
 def action_from_incoming(incoming: IncomingMessage) -> Action:
@@ -191,6 +213,14 @@ def text_for_incoming(action: Action, incoming: IncomingMessage) -> str:
     if action is Action.MAIN_MENU:
         return render_start_text(max_display_name(incoming))
     return text_for_action(action)
+
+
+def response_detail(response: httpx.Response) -> str:
+    """Тело ответа MAX — без него ошибка 400 не диагностируется."""
+    try:
+        return json.dumps(response.json(), ensure_ascii=False)[:500]
+    except ValueError:
+        return response.text[:500]
 
 
 def retry_after_seconds(response: httpx.Response) -> float:
