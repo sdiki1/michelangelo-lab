@@ -104,6 +104,8 @@ class BotOrder(Base):
         ForeignKey("bot_users.id", ondelete="SET NULL"),
         index=True,
     )
+    platform_user_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    bind_source: Mapped[str | None] = mapped_column(String(32), index=True)
     status: Mapped[str | None] = mapped_column(String(128), index=True)
     total_amount: Mapped[str | None] = mapped_column(String(128))
     currency: Mapped[str | None] = mapped_column(String(16))
@@ -121,6 +123,40 @@ class BotOrder(Base):
         default=datetime_now,
         index=True,
     )
+
+
+class SiteEvent(Base):
+    """Действие пользователя на витрине ReadyScript, открытой в миниаппе."""
+
+    __tablename__ = "site_events"
+    __table_args__ = (
+        UniqueConstraint("external_source", "external_event_id", name="uq_site_event"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    external_source: Mapped[str] = mapped_column(String(64), default="readyscript", index=True)
+    # Идентификатор события на стороне сайта — защита от повторной доставки.
+    external_event_id: Mapped[str] = mapped_column(String(128), index=True)
+    bot_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bot_users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    platform: Mapped[str | None] = mapped_column(String(32), index=True)
+    platform_user_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    path: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text)
+    product_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    product_title: Mapped[str | None] = mapped_column(Text)
+    referrer: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime_now,
+        index=True,
+    )
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime_now)
 
 
 class BotEvent(Base):
@@ -186,6 +222,19 @@ async def init_db() -> None:
         )
         await connection.execute(
             text("ALTER TABLE bot_broadcasts ADD COLUMN IF NOT EXISTS media_files JSONB")
+        )
+        await connection.execute(
+            text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS platform_user_id VARCHAR(128)")
+        )
+        await connection.execute(
+            text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS bind_source VARCHAR(32)")
+        )
+        # Заказы, привязанные до появления platform_user_id, переносим на новую колонку.
+        await connection.execute(
+            text(
+                "UPDATE bot_orders SET platform_user_id = telegram_user_id "
+                "WHERE platform_user_id IS NULL AND telegram_user_id IS NOT NULL"
+            )
         )
 
 

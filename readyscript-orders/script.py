@@ -1,52 +1,33 @@
+"""Клиент ReadyScript API.
+
+Модуль импортируется сервисом michelangelo-readyscript-sync, который до начала
+работы переопределяет настройки ниже через readyscript_sync.configure_script.
+Значения по умолчанию нужны только чтобы модуль импортировался сам по себе.
+"""
+
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
 
+PAGE_SIZE = 100
 
-load_dotenv()
-
-API_BASE = os.getenv(
-    "RS_API_BASE",
-    "https://michelangelo-lab.rscms.ru/api-6cdywf0i/methods",
-).rstrip("/")
-
-CLIENT_ID = os.getenv("RS_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("RS_CLIENT_SECRET", "")
-USERNAME = os.getenv("RS_USERNAME", "")
-PASSWORD = os.getenv("RS_PASSWORD", "")
-
-PAGE_SIZE = int(os.getenv("RS_PAGE_SIZE", "100"))
-INTERVAL_SECONDS = int(os.getenv("RS_INTERVAL_SECONDS", "60"))
-OUTPUT_FILE = Path(os.getenv("RS_OUTPUT_FILE", "orders_latest.json"))
-
-# 1 — дополнительно вызывать order.get для каждого заказа.
+# Дополнительно вызывать order.get для каждого заказа.
 # Это даёт более подробный объект заказа, но создаёт больше запросов.
-FETCH_ORDER_DETAILS = os.getenv(
-    "RS_FETCH_ORDER_DETAILS",
-    "1",
-).strip().lower() in {"1", "true", "yes", "on"}
+FETCH_ORDER_DETAILS = True
 
-# 1 — вызывать user.get для каждого уникального user_id.
-FETCH_USERS = os.getenv(
-    "RS_FETCH_USERS",
-    "1",
-).strip().lower() in {"1", "true", "yes", "on"}
+# Вызывать user.get для каждого уникального user_id.
+FETCH_USERS = True
 
 # Небольшая пауза между дополнительными запросами.
-REQUEST_DELAY_SECONDS = float(
-    os.getenv("RS_REQUEST_DELAY_SECONDS", "0.05")
-)
+REQUEST_DELAY_SECONDS = 0.05
 
-REQUEST_TIMEOUT = int(os.getenv("RS_REQUEST_TIMEOUT", "30"))
+REQUEST_TIMEOUT = 30
 
 PLATFORM_KEYWORDS = (
     "telegram",
@@ -56,12 +37,6 @@ PLATFORM_KEYWORDS = (
     "creator",
     "messenger",
     "bot",
-)
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
 logger = logging.getLogger("readyscript-orders")
@@ -596,238 +571,3 @@ def enrich_orders(
         enriched_orders.append(record)
 
     return enriched_orders
-
-
-def validate_settings() -> None:
-    missing_variables = []
-
-    required_variables = {
-        "RS_CLIENT_ID": CLIENT_ID,
-        "RS_CLIENT_SECRET": CLIENT_SECRET,
-        "RS_USERNAME": USERNAME,
-        "RS_PASSWORD": PASSWORD,
-    }
-
-    for variable_name, value in required_variables.items():
-        if not value:
-            missing_variables.append(variable_name)
-
-    if missing_variables:
-        raise RuntimeError(
-            "Не заполнены переменные в .env: "
-            + ", ".join(missing_variables)
-        )
-
-    if PAGE_SIZE < 1:
-        raise RuntimeError("RS_PAGE_SIZE должен быть больше нуля")
-
-    if INTERVAL_SECONDS < 1:
-        raise RuntimeError(
-            "RS_INTERVAL_SECONDS должен быть больше нуля"
-        )
-
-    if REQUEST_TIMEOUT < 1:
-        raise RuntimeError(
-            "RS_REQUEST_TIMEOUT должен быть больше нуля"
-        )
-
-    if REQUEST_DELAY_SECONDS < 0:
-        raise RuntimeError(
-            "RS_REQUEST_DELAY_SECONDS не может быть отрицательным"
-        )
-
-
-def save_orders(orders: list[dict[str, Any]]) -> None:
-    result = {
-        "updated_at": time.strftime(
-            "%Y-%m-%dT%H:%M:%S%z",
-            time.localtime(),
-        ),
-        "count": len(orders),
-        "orders": orders,
-    }
-
-    temporary_file = OUTPUT_FILE.with_suffix(
-        OUTPUT_FILE.suffix + ".tmp"
-    )
-
-    temporary_file.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    temporary_file.write_text(
-        json.dumps(
-            result,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
-
-    temporary_file.replace(OUTPUT_FILE)
-
-    logger.info(
-        "Заказы сохранены в %s",
-        OUTPUT_FILE.resolve(),
-    )
-
-
-def print_orders_summary(
-    orders: list[dict[str, Any]],
-) -> None:
-    paid_count = sum(
-        1
-        for order in orders
-        if str(order.get("is_payed", "0")) == "1"
-    )
-
-    telegram_count = sum(
-        1
-        for order in orders
-        if str(
-            order.get("creator_platform_id", "")
-        ).lower() == "telegram-web-app"
-    )
-
-    max_count = sum(
-        1
-        for order in orders
-        if "max" in str(
-            order.get("creator_platform_id", "")
-        ).lower()
-    )
-
-    with_found_platform_data = sum(
-        1
-        for order in orders
-        if order.get("platform_data")
-    )
-
-    logger.info(
-        (
-            "Всего заказов: %s; оплаченных: %s; "
-            "Telegram: %s; MAX: %s; "
-            "с найденными platform-полями: %s"
-        ),
-        len(orders),
-        paid_count,
-        telegram_count,
-        max_count,
-        with_found_platform_data,
-    )
-
-    for order in orders[-10:]:
-        user = order.get("readyscript_user")
-
-        if not isinstance(user, dict):
-            user = {}
-
-        logger.info(
-            (
-                "Заказ id=%s, номер=%s, user_id=%s, "
-                "платформа=%s, пользователь=%s, сумма=%s %s, "
-                "оплачен=%s"
-            ),
-            order.get("id"),
-            order.get("order_num"),
-            order.get("user_id"),
-            order.get("creator_platform_id"),
-            (
-                user.get("full_name")
-                or " ".join(
-                    filter(
-                        None,
-                        [
-                            user.get("surname"),
-                            user.get("name"),
-                            user.get("midname"),
-                        ],
-                    )
-                )
-                or user.get("login")
-                or user.get("e_mail")
-                or "не найден"
-            ),
-            order.get("totalcost"),
-            order.get("currency"),
-            order.get("is_payed"),
-        )
-
-
-def run_sync_loop() -> None:
-    validate_settings()
-
-    client = ReadyScriptClient(
-        api_base=API_BASE,
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        username=USERNAME,
-        password=PASSWORD,
-    )
-
-    logger.info(
-        (
-            "Синхронизация запущена. Интервал: %s сек.; "
-            "order.get=%s; user.get=%s"
-        ),
-        INTERVAL_SECONDS,
-        FETCH_ORDER_DETAILS,
-        FETCH_USERS,
-    )
-
-    try:
-        while True:
-            iteration_started = time.monotonic()
-
-            try:
-                orders = client.get_all_orders()
-                enriched_orders = enrich_orders(
-                    client=client,
-                    orders=orders,
-                )
-
-                save_orders(enriched_orders)
-                print_orders_summary(enriched_orders)
-
-            except requests.RequestException:
-                logger.exception(
-                    "Сетевая ошибка при обращении к ReadyScript"
-                )
-
-            except ReadyScriptAPIError:
-                logger.exception(
-                    "ReadyScript вернул ошибку"
-                )
-
-            except Exception:
-                logger.exception(
-                    "Непредвиденная ошибка синхронизации"
-                )
-
-            iteration_duration = (
-                time.monotonic() - iteration_started
-            )
-
-            sleep_seconds = max(
-                1,
-                INTERVAL_SECONDS - iteration_duration,
-            )
-
-            logger.info(
-                "Следующая проверка через %.1f сек.",
-                sleep_seconds,
-            )
-
-            time.sleep(sleep_seconds)
-
-    except KeyboardInterrupt:
-        logger.info("Синхронизация остановлена пользователем")
-
-    finally:
-        client.close()
-
-
-if __name__ == "__main__":
-    run_sync_loop()

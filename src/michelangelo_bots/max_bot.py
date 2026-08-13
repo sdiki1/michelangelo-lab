@@ -170,16 +170,13 @@ class MaxBot:
 
 
 def action_from_incoming(incoming: IncomingMessage) -> Action:
-    if incoming.payload:
-        try:
-            return Action(incoming.payload)
-        except ValueError:
-            return Action.MAIN_MENU
-
-    if (incoming.text or "").strip().lower() == "/start":
+    if not incoming.payload:
         return Action.MAIN_MENU
 
-    return Action.MAIN_MENU
+    try:
+        return Action(incoming.payload)
+    except ValueError:
+        return Action.MAIN_MENU
 
 
 def outgoing_recipient_id(incoming: IncomingMessage) -> int | str | None:

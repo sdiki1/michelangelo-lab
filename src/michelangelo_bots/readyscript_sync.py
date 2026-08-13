@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
-import json
 import logging
-import os
 import time
 from pathlib import Path
 from types import ModuleType
@@ -29,9 +27,8 @@ async def sync_readyscript_orders(
     *,
     session: AsyncSession,
     settings: Settings,
-    source: str = "file",
 ) -> dict[str, int]:
-    orders = load_orders(settings) if source == "file" else fetch_orders(settings)
+    orders = fetch_orders(settings)
     imported = 0
     linked = 0
 
@@ -43,19 +40,6 @@ async def sync_readyscript_orders(
 
     await session.commit()
     return {"imported": imported, "linked": linked}
-
-
-def load_orders(settings: Settings) -> list[dict[str, Any]]:
-    path = settings.readyscript_orders_file
-    if not path.exists():
-        raise ReadyScriptSyncError(f"ReadyScript orders file not found: {path}")
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    orders = data.get("orders") if isinstance(data, dict) else data
-    if not isinstance(orders, list):
-        raise ReadyScriptSyncError("ReadyScript orders JSON must contain an orders list")
-
-    return [order for order in orders if isinstance(order, dict)]
 
 
 def fetch_orders(settings: Settings) -> list[dict[str, Any]]:
@@ -83,7 +67,6 @@ def load_readyscript_script(path: Path) -> ModuleType:
     if not path.exists():
         raise ReadyScriptSyncError(f"ReadyScript script not found: {path}")
 
-    prepare_script_environment(path.parent / ".env")
     spec = importlib.util.spec_from_file_location("readyscript_orders_script", path)
     if spec is None or spec.loader is None:
         raise ReadyScriptSyncError(f"Could not load ReadyScript script: {path}")
@@ -93,49 +76,7 @@ def load_readyscript_script(path: Path) -> ModuleType:
     return module
 
 
-def prepare_script_environment(path: Path) -> None:
-    env = load_env_file(path)
-    passthrough_keys = (
-        "RS_API_BASE",
-        "RS_CLIENT_ID",
-        "RS_CLIENT_SECRET",
-        "RS_USERNAME",
-        "RS_PASSWORD",
-        "RS_OUTPUT_FILE",
-    )
-    for key in passthrough_keys:
-        if env.get(key):
-            os.environ.setdefault(key, env[key])
-
-    int_keys = {
-        "RS_PAGE_SIZE": 100,
-        "RS_INTERVAL_SECONDS": 60,
-        "RS_REQUEST_TIMEOUT": 30,
-    }
-    for key, default in int_keys.items():
-        if env.get(key):
-            os.environ.setdefault(key, str(parse_int(env[key], default)))
-
-    float_keys = {"RS_REQUEST_DELAY_SECONDS": 0.05}
-    for key, default in float_keys.items():
-        if env.get(key):
-            os.environ.setdefault(key, str(parse_float(env[key], default)))
-
-    bool_keys = {
-        "RS_FETCH_ORDER_DETAILS": True,
-        "RS_FETCH_USERS": True,
-    }
-    for key, default in bool_keys.items():
-        if env.get(key):
-            os.environ.setdefault(key, "1" if parse_bool(env[key], default) else "0")
-
-
 def configure_script(script: ModuleType, rs_settings: dict[str, Any]) -> None:
-    script.API_BASE = rs_settings["api_base"].rstrip("/")
-    script.CLIENT_ID = rs_settings["client_id"]
-    script.CLIENT_SECRET = rs_settings["client_secret"]
-    script.USERNAME = rs_settings["username"]
-    script.PASSWORD = rs_settings["password"]
     script.PAGE_SIZE = rs_settings["page_size"]
     script.FETCH_ORDER_DETAILS = rs_settings["fetch_order_details"]
     script.FETCH_USERS = rs_settings["fetch_users"]
@@ -462,18 +403,18 @@ def parse_bool(value: object, default: bool) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def run_once(source: str) -> dict[str, int]:
+async def run_once() -> dict[str, int]:
     logging.basicConfig(level=logging.INFO)
     await init_db()
     settings = get_settings()
     session_factory = get_session_factory()
     async with session_factory() as session:
-        result = await sync_readyscript_orders(session=session, settings=settings, source=source)
+        result = await sync_readyscript_orders(session=session, settings=settings)
     logger.info("ReadyScript sync complete: %s", result)
     return result
 
 
-async def run_loop(source: str, interval_seconds: int | None) -> None:
+async def run_loop(interval_seconds: int | None) -> None:
     logging.basicConfig(level=logging.INFO)
     await init_db()
     settings = get_settings()
@@ -481,16 +422,12 @@ async def run_loop(source: str, interval_seconds: int | None) -> None:
     interval = interval_seconds or rs_settings["interval_seconds"] or 60
     session_factory = get_session_factory()
 
-    logger.info("ReadyScript polling started: source=%s interval=%ss", source, interval)
+    logger.info("ReadyScript polling started: interval=%ss", interval)
     while True:
         started = time.monotonic()
         try:
             async with session_factory() as session:
-                result = await sync_readyscript_orders(
-                    session=session,
-                    settings=settings,
-                    source=source,
-                )
+                result = await sync_readyscript_orders(session=session, settings=settings)
             logger.info("ReadyScript sync complete: %s", result)
         except Exception:
             logger.exception("ReadyScript sync iteration failed")
@@ -501,17 +438,16 @@ async def run_loop(source: str, interval_seconds: int | None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import ReadyScript orders into admin DB")
-    parser.add_argument("--source", choices=["file", "api"], default="file")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--interval", type=int, default=None)
     args = parser.parse_args()
 
     if args.loop:
-        asyncio.run(run_loop(args.source, args.interval))
+        asyncio.run(run_loop(args.interval))
         return
 
     started = time.monotonic()
-    result = asyncio.run(run_once(args.source))
+    result = asyncio.run(run_once())
     print(
         "ReadyScript sync complete: "
         f"imported={result['imported']} linked={result['linked']} "

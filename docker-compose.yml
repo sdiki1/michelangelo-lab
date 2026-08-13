@@ -58,7 +58,7 @@ services:
     env_file:
       - path: .env
         required: false
-    command: michelangelo-readyscript-sync --source api --loop --interval 60
+    command: michelangelo-readyscript-sync --loop --interval 60
     volumes:
       - ./readyscript-orders:/app/readyscript-orders:ro
     depends_on:

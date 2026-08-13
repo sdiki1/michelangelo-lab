@@ -20,15 +20,18 @@ from michelangelo_bots.db import (
     BotEvent,
     BotOrder,
     BotUser,
+    SiteEvent,
     datetime_now,
     get_session,
     init_db,
 )
+from michelangelo_bots.rs_api import router as readyscript_router
 from michelangelo_bots.telegram_webapp import verify_telegram_init_data
 from michelangelo_bots.tracking import find_user
 
 security = HTTPBasic()
 app = FastAPI(title="Michelangelo Bot Admin")
+app.include_router(readyscript_router)
 
 
 class ReadyScriptOrderPayload(BaseModel):
@@ -119,6 +122,11 @@ async def dashboard(
     )
     total_events = await scalar(session, select(func.count(BotEvent.id)))
     total_orders = await scalar(session, select(func.count(BotOrder.id)))
+    total_site_events = await scalar(session, select(func.count(SiteEvent.id)))
+    bound_orders = await scalar(
+        session,
+        select(func.count(BotOrder.id)).where(BotOrder.platform_user_id.is_not(None)),
+    )
 
     action_rows = (
         await session.execute(
@@ -147,8 +155,10 @@ async def dashboard(
           {stat_card("Всего пользователей", total_users)}
           {stat_card("Telegram", telegram_users)}
           {stat_card("MAX", max_users)}
-          {stat_card("Действий", total_events)}
+          {stat_card("Действий в ботах", total_events)}
+          {stat_card("Действий на витрине", total_site_events)}
           {stat_card("Заказов", total_orders)}
+          {stat_card("Заказов с привязкой", bound_orders)}
         </section>
         <section class="grid">
           <article>
@@ -281,6 +291,7 @@ async def broadcasts(
               <tr>
                 <th>ID</th><th>Наименование</th><th>Дата и время рассылки</th>
                 <th>Статус</th><th>Дата создания</th><th>Успешно/всего</th><th>Ошибка</th>
+                <th>Действие</th>
               </tr>
             </thead>
             <tbody>{rows}</tbody>
@@ -452,7 +463,7 @@ async def orders(
             <thead>
               <tr>
                 <th>Номер</th><th>Товары</th><th>Сумма</th><th>Клиент</th><th>Телефон</th><th>Email</th>
-                <th>Telegram ID</th><th>Пользователь</th><th>Обновлён</th>
+                <th>Привязка</th><th>Пользователь</th><th>Обновлён</th>
               </tr>
             </thead>
             <tbody>{rows}</tbody>
@@ -460,6 +471,147 @@ async def orders(
         </div>
         """,
     )
+
+
+@app.get("/site-events", response_class=HTMLResponse)
+async def site_events(
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    platform: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> str:
+    statement: Select[tuple[SiteEvent, BotUser | None]] = select(SiteEvent, BotUser).outerjoin(
+        BotUser, BotUser.id == SiteEvent.bot_user_id
+    )
+    if action:
+        statement = statement.where(SiteEvent.action == action)
+    if platform:
+        statement = statement.where(SiteEvent.platform == platform)
+    if q:
+        pattern = f"%{q}%"
+        statement = statement.where(
+            SiteEvent.path.ilike(pattern)
+            | SiteEvent.title.ilike(pattern)
+            | SiteEvent.product_title.ilike(pattern)
+            | SiteEvent.platform_user_id.ilike(pattern)
+        )
+
+    total = await scalar(session, select(func.count(SiteEvent.id)))
+    identified = await scalar(
+        session,
+        select(func.count(SiteEvent.id)).where(SiteEvent.platform_user_id.is_not(None)),
+    )
+    sessions_count = await scalar(
+        session,
+        select(func.count(func.distinct(SiteEvent.session_id))),
+    )
+
+    action_rows = (
+        await session.execute(
+            select(SiteEvent.action, func.count(SiteEvent.id))
+            .group_by(SiteEvent.action)
+            .order_by(desc(func.count(SiteEvent.id)))
+            .limit(20)
+        )
+    ).all()
+    product_rows = (
+        await session.execute(
+            select(SiteEvent.product_title, func.count(SiteEvent.id))
+            .where(SiteEvent.product_title.is_not(None))
+            .group_by(SiteEvent.product_title)
+            .order_by(desc(func.count(SiteEvent.id)))
+            .limit(15)
+        )
+    ).all()
+    action_options = "".join(
+        f'<option value="{e(name)}" {selected(action, name)}>{e(name)}</option>'
+        for name, _count in action_rows
+    )
+
+    result = await session.execute(statement.order_by(desc(SiteEvent.occurred_at)).limit(limit))
+    rows = "".join(site_event_row(event, user) for event, user in result.all())
+
+    return page(
+        "Действия на витрине",
+        f"""
+        <section class="stats">
+          {stat_card("Всего действий", total)}
+          {stat_card("С опознанным юзером", identified)}
+          {stat_card("Сессий", sessions_count)}
+        </section>
+        <section class="grid">
+          <article>
+            <h2>Популярные действия</h2>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Действие</th><th>Количество</th></tr></thead>
+                <tbody>{"".join(
+                    f"<tr><td>{e(name)}</td><td>{count}</td></tr>"
+                    for name, count in action_rows
+                )}</tbody>
+              </table>
+            </div>
+            <h2 style="margin-top:18px">Товары в фокусе</h2>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Товар</th><th>Просмотров</th></tr></thead>
+                <tbody>{"".join(
+                    f"<tr><td>{e(name)}</td><td>{count}</td></tr>"
+                    for name, count in product_rows
+                )}</tbody>
+              </table>
+            </div>
+          </article>
+          <article>
+            <form class="filters" method="get">
+              <input name="q" value="{e(q)}" placeholder="Поиск: страница, товар, ID пользователя">
+              <select name="action">
+                <option value="">Все действия</option>
+                {action_options}
+              </select>
+              <select name="platform">
+                <option value="">Все платформы</option>
+                <option value="telegram" {selected(platform, "telegram")}>Telegram</option>
+                <option value="max" {selected(platform, "max")}>MAX</option>
+              </select>
+              <input type="number" name="limit" value="{limit}" min="1" max="1000">
+              <button>Фильтровать</button>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Время</th><th>Платформа</th><th>Пользователь</th>
+                    <th>Действие</th><th>Страница / товар</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+        """,
+    )
+
+
+def site_event_row(event: SiteEvent, user: BotUser | None) -> str:
+    who = (
+        f'<a href="/users/{user.id}">{e(client_label(user))}</a>'
+        if user
+        else e(event.platform_user_id) or '<span class="muted">аноним</span>'
+    )
+    target = e(event.product_title or event.title or event.path)
+    return f"""
+    <tr>
+      <td>{format_dt(event.occurred_at)}</td>
+      <td>{e(event.platform)}</td>
+      <td>{who}</td>
+      <td>{e(event.action)}</td>
+      <td>{target}</td>
+    </tr>
+    """
 
 
 @app.get("/users", response_class=HTMLResponse)
@@ -676,6 +828,7 @@ def page(title: str, body: str) -> str:
           <a href="/orders">Заказы</a>
           <a href="/broadcasts">Рассылки</a>
           <a href="/client-paths">Путь клиента</a>
+          <a href="/site-events">Витрина</a>
           <a href="/users">Пользователи</a>
         </header>
         <main>
@@ -769,11 +922,28 @@ def order_row(order: BotOrder, user: BotUser | None) -> str:
       <td>{e(order.customer_name)}</td>
       <td>{e(order.customer_phone)}</td>
       <td>{e(order.customer_email)}</td>
-      <td>{e(order.telegram_user_id)}</td>
+      <td>{order_binding(order)}</td>
       <td>{user_link}</td>
       <td>{format_dt(order.updated_at)}</td>
     </tr>
     """
+
+
+BIND_SOURCE_LABELS = {
+    "miniapp": "миниапп",
+    "manual": "вручную",
+    "phone": "по телефону",
+    "email": "по email",
+}
+
+
+def order_binding(order: BotOrder) -> str:
+    platform_user_id = order.platform_user_id or order.telegram_user_id
+    if not platform_user_id:
+        return '<span class="muted">не привязан</span>'
+    source = BIND_SOURCE_LABELS.get(order.bind_source or "", order.bind_source or "")
+    suffix = f'<div class="muted">{e(source)}</div>' if source else ""
+    return f"{e(order.platform)} {e(platform_user_id)}{suffix}"
 
 
 def user_order_row(order: BotOrder) -> str:

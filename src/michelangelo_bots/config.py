@@ -22,13 +22,15 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="change-me", alias="ADMIN_PASSWORD")
     uploads_dir: Path = Field(default=Path("uploads"), alias="UPLOADS_DIR")
     readyscript_webhook_secret: str = Field(default="", alias="READYSCRIPT_WEBHOOK_SECRET")
+    # Общий секрет HMAC-подписи вебхуков модуля michelangelo (ReadyScript → админка).
+    rs_module_secret: str = Field(default="", alias="RS_MODULE_SECRET")
+    rs_signature_tolerance_seconds: int = Field(
+        default=300,
+        alias="RS_SIGNATURE_TOLERANCE_SECONDS",
+    )
     readyscript_script_path: Path = Field(
         default=Path("readyscript-orders/script.py"),
         alias="READYSCRIPT_SCRIPT_PATH",
-    )
-    readyscript_orders_file: Path = Field(
-        default=Path("readyscript-orders/orders_latest.json"),
-        alias="READYSCRIPT_ORDERS_FILE",
     )
     readyscript_api_base: str = Field(
         default="https://michelangelo-lab.rscms.ru/api-6cdywf0i/methods",

@@ -95,8 +95,48 @@ ReadyScript polling runs automatically in the `readyscript-sync` compose service
 docker compose up -d readyscript-sync
 ```
 
-It fetches orders through `readyscript-orders/script.py` every 60 seconds. RS credentials
-can be stored in the project `.env` or in `readyscript-orders/.env`.
+It fetches orders from the ReadyScript API every 60 seconds through the client in
+`readyscript-orders/script.py`. RS credentials can be stored in the project `.env` or in
+`readyscript-orders/.env`.
+
+To run a single sync manually:
+
+```bash
+michelangelo-readyscript-sync
+```
+
+## ReadyScript module (site ↔ admin panel)
+
+The boxed storefront at `https://michelangelo-lab.ru` talks to this panel at
+`https://admin.michelangelo-lab.ru` through the PHP module in
+[`readyscript-module/`](readyscript-module/README.md). It captures the Telegram/MAX
+identity when the shop is opened inside a miniapp, stamps it onto the order, and
+pushes webhooks here.
+
+Set the shared signing secret on both sides:
+
+```bash
+RS_MODULE_SECRET=<same value as in the ReadyScript module settings>
+```
+
+Endpoints exposed for the module (all HMAC-signed, see `webhook_security.py`):
+
+```text
+POST /api/rs/orders     order created or changed
+POST /api/rs/events     batch of storefront actions
+POST /api/rs/identity   verify initData, return the trusted user id
+```
+
+Headers: `X-ML-Timestamp` and `X-ML-Signature: sha256=<hex>`, where the signature
+covers `"{timestamp}.{raw_body}"`. Requests older than
+`RS_SIGNATURE_TOLERANCE_SECONDS` (default 300) are rejected.
+
+Telegram `initData` is verified **here**, with the bot token — an id claimed by the
+site without a valid signature is stored as `bind_source="manual"` and never
+overrides a verified one.
+
+Storefront statistics live under **Витрина** in the admin panel; order bindings are
+shown in the **Привязка** column on the orders page.
 
 PostgreSQL runs in the same compose stack and stores data in the `postgres-data` Docker volume.
 Tables are created automatically on service startup:

@@ -35,7 +35,12 @@ async def send_broadcast(
     broadcast.last_error = None
     await session.flush()
 
-    async with httpx.AsyncClient(timeout=30) as http_client:
+    # base_url нужен MaxClient: он ходит по относительным путям (/messages).
+    # Запросы в Telegram идут по абсолютным URL, base_url на них не влияет.
+    async with httpx.AsyncClient(
+        base_url=str(settings.max_api_base_url).rstrip("/"),
+        timeout=30,
+    ) as http_client:
         max_client = MaxClient(
             token=settings.max_bot_token,
             base_url=str(settings.max_api_base_url),
