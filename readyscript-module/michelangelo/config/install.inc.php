@@ -2,26 +2,31 @@
 namespace Michelangelo\Config;
 
 /**
- * Установка модуля.
- *
- * Таблицу michelangelo_outbox создавать вручную не нужно: ReadyScript
- * синхронизирует схему из описания ORM-объектов (см. model/orm/outbox.inc.php).
- * Поля заказа ml_* добавляются событием ormInitShopOrder и появляются в
- * таблице shop_order при первом же обновлении структуры.
+ * Синхронизирует не только ORM модуля, но и расширенный нами shop_order.
  */
 class Install extends \RS\Module\AbstractInstall
 {
-    function install()
+    function update()
     {
-        // Секрет подписи генерируем сразу, чтобы модуль нельзя было
-        // случайно оставить с пустым (то есть выключенным) секретом.
-        $config = \RS\Config\Loader::byModule($this);
-        if (empty($config['secret'])) {
-            $config['secret'] = bin2hex(random_bytes(32));
-            $config->update();
+        if (!parent::update()) {
+            return false;
         }
 
-        $this->installAdminMenu();
+        $order = new \Shop\Model\Orm\Order();
+        if (!$order->dbUpdate()) {
+            return false;
+        }
+
+        // Переносим данные из версии 1.x. Повторный запуск безопасен:
+        // обработчик заполняет только пустое новое поле.
+        $orders = \RS\Orm\Request::make()
+            ->from($order)
+            ->where("ml_platform_user_id IS NOT NULL AND ml_platform_user_id != ''")
+            ->objects();
+        foreach ($orders as $legacy_order) {
+            $legacy_order->update();
+        }
+
         return true;
     }
 }

@@ -105,38 +105,14 @@ To run a single sync manually:
 michelangelo-readyscript-sync
 ```
 
-## ReadyScript module (site ↔ admin panel)
+## ReadyScript module (polling architecture)
 
-The boxed storefront at `https://michelangelo-lab.ru` talks to this panel at
-`https://admin.michelangelo-lab.ru` through the PHP module in
-[`readyscript-module/`](readyscript-module/README.md). It captures the Telegram/MAX
-identity when the shop is opened inside a miniapp, stamps it onto the order, and
-pushes webhooks here.
-
-Set the shared signing secret on both sides:
-
-```bash
-RS_MODULE_SECRET=<same value as in the ReadyScript module settings>
-```
-
-Endpoints exposed for the module (all HMAC-signed, see `webhook_security.py`):
-
-```text
-POST /api/rs/orders     order created or changed
-POST /api/rs/events     batch of storefront actions
-POST /api/rs/identity   verify initData, return the trusted user id
-```
-
-Headers: `X-ML-Timestamp` and `X-ML-Signature: sha256=<hex>`, where the signature
-covers `"{timestamp}.{raw_body}"`. Requests older than
-`RS_SIGNATURE_TOLERANCE_SECONDS` (default 300) are rejected.
-
-Telegram `initData` is verified **here**, with the bot token — an id claimed by the
-site without a valid signature is stored as `bind_source="manual"` and never
-overrides a verified one.
-
-Storefront statistics live under **Витрина** in the admin panel; order bindings are
-shown in the **Привязка** column on the orders page.
+The PHP module in [`readyscript-module/`](readyscript-module/README.md) captures
+signed Telegram/MAX mini-app identity, verifies it inside ReadyScript, and writes
+`telegram_user_id` or `max_user_id` directly to each order. Both fields are marked
+`appVisible`, so the `readyscript-sync` service reads them through the standard
+ReadyScript API. No outgoing ReadyScript webhook or module cron is required for
+order synchronization.
 
 PostgreSQL runs in the same compose stack and stores data in the `postgres-data` Docker volume.
 Tables are created automatically on service startup:

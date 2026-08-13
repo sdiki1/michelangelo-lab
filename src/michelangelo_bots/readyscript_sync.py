@@ -174,9 +174,11 @@ async def upsert_order(
 
     order.external_order_number = first_value(raw_order.get("order_num"), raw_order.get("number"))
     order.platform = identity.get("platform")
+    order.platform_user_id = identity.get("platform_user_id")
     order.telegram_user_id = (
         identity.get("platform_user_id") if identity.get("platform") == "telegram" else None
     )
+    order.bind_source = first_value(raw_order.get("ml_bind_source"), "readyscript_polling")
     order.bot_user_id = bot_user.id if bot_user else None
     order.status = first_value(raw_order.get("status"), raw_order.get("status_title"))
     order.total_amount = first_value(
@@ -264,6 +266,9 @@ def extract_platform_user_id(
         f"{platform}_uid",
     )
 
+    # Нормализованный контракт модуля: эти поля находятся прямо в заказе.
+    # Старые форматы ниже оставлены, чтобы polling пережил поэтапный rollout.
+
     if platform == "telegram" and raw_order.get(init_data_key):
         init_data = verify_telegram_init_data(
             str(raw_order[init_data_key]),
@@ -277,6 +282,12 @@ def extract_platform_user_id(
         direct_value = raw_order.get(key)
         if direct_value is not None and str(direct_value).strip():
             return str(direct_value).strip()
+
+    if (
+        raw_order.get("ml_platform") == platform
+        and scalar_string(raw_order.get("ml_platform_user_id"))
+    ):
+        return scalar_string(raw_order.get("ml_platform_user_id"))
 
     for item in raw_order.get("platform_data") or []:
         if not isinstance(item, dict):

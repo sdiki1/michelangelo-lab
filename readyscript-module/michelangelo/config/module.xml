@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+    <defaultValues>
+        <name>Michelangelo: ID мессенджера в заказе</name>
+        <description>Сохраняет проверенные Telegram/MAX ID в заказах и публикует их во внешнем API ReadyScript.</description>
+        <version>2.0.0.0</version>
+        <version_date>2026-08-13</version_date>
+        <author>Michelangelo Lab</author>
+        <dependfrom>shop,externalapi</dependfrom>
+        <enabled>1</enabled>
+        <telegram_bot_token></telegram_bot_token>
+        <max_bot_token></max_bot_token>
+        <init_data_max_age>86400</init_data_max_age>
+    </defaultValues>
+</config>

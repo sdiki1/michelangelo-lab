@@ -89,12 +89,22 @@ async def require_signature(
     settings: Annotated[Settings, Depends(get_settings)],
     x_ml_timestamp: Annotated[str | None, Header(alias="X-ML-Timestamp")] = None,
     x_ml_signature: Annotated[str | None, Header(alias="X-ML-Signature")] = None,
-) -> None:
+) -> bool:
+    """True — запрос подписан и его можно обрабатывать.
+
+    False — интеграция не настроена (нет секрета). В этом случае запрос
+    отклоняется молча: ошибку наверх не поднимаем, чтобы сбой доставки вебхука
+    не мешал работе сайта. Данные при этом не пишутся — принять неподписанный
+    заказ означало бы позволить кому угодно подделать чужой.
+
+    Если секрет задан, подпись проверяется строго: плохая подпись — это 401.
+    """
     if not settings.rs_module_secret:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="RS_MODULE_SECRET is not configured",
+        logger.warning(
+            "RS_MODULE_SECRET не задан — запрос от ReadyScript на %s проигнорирован",
+            request.url.path,
         )
+        return False
     try:
         verify_signature(
             secret=settings.rs_module_secret,
@@ -105,6 +115,14 @@ async def require_signature(
         )
     except WebhookSignatureError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    return True
+
+
+NOT_CONFIGURED_RESPONSE = {
+    "ok": True,
+    "stored": False,
+    "ignored": "RS_MODULE_SECRET is not configured",
+}
 
 
 def resolve_identity(
@@ -187,10 +205,13 @@ def display_name(identity: PlatformIdentity | None) -> str | None:
 @router.post("/orders")
 async def receive_order(
     payload: OrderWebhook,
-    _: Annotated[None, Depends(require_signature)],
+    signed: Annotated[bool, Depends(require_signature)],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
+    if not signed:
+        return NOT_CONFIGURED_RESPONSE
+
     platform, platform_user_id, bind_source = resolve_identity(payload.identity, settings)
     user = await find_or_create_user(
         session,

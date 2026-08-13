@@ -1,5 +1,5 @@
 from michelangelo_bots.config import Settings
-from michelangelo_bots.readyscript_sync import extract_customer_identity
+from michelangelo_bots.readyscript_sync import extract_customer_identity, extract_platform_user_id
 
 
 def test_extract_customer_identity_from_readyscript_order() -> None:
@@ -43,3 +43,31 @@ def test_extract_customer_identity_from_platform_data() -> None:
 
     assert identity["platform"] == "max"
     assert identity["platform_user_id"] == "456"
+
+
+def test_extract_customer_identity_from_normalized_module_fields() -> None:
+    settings = Settings(_env_file=None)
+
+    telegram = extract_customer_identity(
+        {"telegram_user_id": "123", "max_user_id": "456"},
+        settings,
+    )
+    max_only = extract_customer_identity({"max_user_id": "456"}, settings)
+
+    assert telegram["platform"] == "telegram"
+    assert telegram["platform_user_id"] == "123"
+    assert max_only["platform"] == "max"
+    assert max_only["platform_user_id"] == "456"
+
+
+def test_extract_platform_user_id_from_legacy_module_fields() -> None:
+    settings = Settings(_env_file=None)
+
+    assert (
+        extract_platform_user_id(
+            {"ml_platform": "max", "ml_platform_user_id": "789"},
+            settings,
+            "max",
+        )
+        == "789"
+    )
