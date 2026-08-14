@@ -38,9 +38,8 @@
             return { platform: 'telegram', init_data: telegram.initData };
         }
 
-        var max = window.WebApp
-            || (window.MAX && (window.MAX.WebApp || window.MAX));
-        if (max && max.initData && max.initDataUnsafe && max.initDataUnsafe.user) {
+        var max = getMaxWebApp();
+        if (max && max.initData) {
             return { platform: 'max', init_data: max.initData };
         }
 
@@ -52,6 +51,11 @@
             return { platform: 'max', init_data: launch.WebAppData };
         }
         return null;
+    }
+
+    function getMaxWebApp() {
+        return window.WebApp
+            || (window.MAX && (window.MAX.WebApp || window.MAX));
     }
 
     function parseFragment(fragment) {
@@ -74,6 +78,7 @@
             return;
         }
         var launch = parseFragment(location.hash);
+        var max = getMaxWebApp();
         fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -91,7 +96,10 @@
                 telegram_version: window.Telegram && window.Telegram.WebApp
                     ? window.Telegram.WebApp.version
                     : null,
-                max_object: Boolean(window.WebApp || window.MAX),
+                max_object: Boolean(max),
+                max_init_data_length: max ? String(max.initData || '').length : 0,
+                max_platform: max ? max.platform : null,
+                max_version: max ? max.version : null,
                 hash_has_telegram: Boolean(launch.tgWebAppData),
                 hash_has_max: Boolean(launch.WebAppData),
                 referrer: document.referrer || null,

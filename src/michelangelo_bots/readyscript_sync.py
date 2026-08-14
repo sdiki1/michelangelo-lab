@@ -9,14 +9,23 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from michelangelo_bots.config import Settings, get_settings
-from michelangelo_bots.db import BotOrder, BotUser, datetime_now, get_session_factory, init_db
+from michelangelo_bots.db import (
+    BotOrder,
+    BotUser,
+    IntegrationState,
+    datetime_now,
+    get_session_factory,
+    init_db,
+)
+from michelangelo_bots.order_notifications import deliver_pending_order_notifications
 from michelangelo_bots.telegram_webapp import verify_telegram_init_data
 
 logger = logging.getLogger(__name__)
+ORDER_NOTIFICATIONS_STATE_KEY = "readyscript_order_notifications_initialized"
 
 
 class ReadyScriptSyncError(RuntimeError):
@@ -31,15 +40,37 @@ async def sync_readyscript_orders(
     orders = fetch_orders(settings)
     imported = 0
     linked = 0
+    baseline = await prepare_notification_baseline(session)
 
     for raw_order in orders:
-        order = await upsert_order(session, settings, raw_order)
+        order, created = await upsert_order(session, settings, raw_order)
+        if baseline and created:
+            # Первый запуск после добавления уведомлений — это начальная
+            # синхронизация, а не пачка новых заказов для администратора.
+            order.admin_notified_at = datetime_now()
         imported += 1
         if order.bot_user_id is not None:
             linked += 1
 
     await session.commit()
-    return {"imported": imported, "linked": linked}
+    notified = await deliver_pending_order_notifications(session, settings)
+    return {"imported": imported, "linked": linked, "notified": notified}
+
+
+async def prepare_notification_baseline(session: AsyncSession) -> bool:
+    state = await session.get(IntegrationState, ORDER_NOTIFICATIONS_STATE_KEY)
+    if state is not None:
+        return False
+
+    # Не рассылаем уже импортированные заказы при обновлении приложения.
+    await session.execute(
+        update(BotOrder)
+        .where(BotOrder.admin_notified_at.is_(None))
+        .values(admin_notified_at=datetime_now())
+    )
+    session.add(IntegrationState(key=ORDER_NOTIFICATIONS_STATE_KEY, value="1"))
+    await session.flush()
+    return True
 
 
 def fetch_orders(settings: Settings) -> list[dict[str, Any]]:
@@ -148,7 +179,7 @@ async def upsert_order(
     session: AsyncSession,
     settings: Settings,
     raw_order: dict[str, Any],
-) -> BotOrder:
+) -> tuple[BotOrder, bool]:
     external_order_id = first_value(raw_order.get("id"), raw_order.get("order_id"))
     if external_order_id is None:
         raise ReadyScriptSyncError(f"ReadyScript order has no id: {raw_order!r}")
@@ -164,6 +195,7 @@ async def upsert_order(
         )
     )
     order = result.scalar_one_or_none()
+    created = order is None
     if order is None:
         order = BotOrder(
             external_source="readyscript",
@@ -199,7 +231,7 @@ async def upsert_order(
         bot_user.full_name = order.customer_name or bot_user.full_name
         bot_user.raw_profile = {**(bot_user.raw_profile or {}), "readyscript_order": raw_order}
 
-    return order
+    return order, created
 
 
 def extract_customer_identity(
@@ -462,6 +494,7 @@ def main() -> None:
     print(
         "ReadyScript sync complete: "
         f"imported={result['imported']} linked={result['linked']} "
+        f"notified={result['notified']} "
         f"duration={time.monotonic() - started:.1f}s"
     )
 

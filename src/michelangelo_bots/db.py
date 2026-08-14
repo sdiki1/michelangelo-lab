@@ -113,6 +113,13 @@ class BotOrder(Base):
     customer_phone: Mapped[str | None] = mapped_column(String(64), index=True)
     customer_email: Mapped[str | None] = mapped_column(String(255), index=True)
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    admin_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
+    admin_notification_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    admin_notification_error: Mapped[str | None] = mapped_column(Text)
+    admin_notification_delivered: Mapped[list[str] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=datetime_now,
@@ -123,6 +130,13 @@ class BotOrder(Base):
         default=datetime_now,
         index=True,
     )
+
+
+class IntegrationState(Base):
+    __tablename__ = "integration_states"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
 
 
 class SiteEvent(Base):
@@ -228,6 +242,30 @@ async def init_db() -> None:
         )
         await connection.execute(
             text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS bind_source VARCHAR(32)")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders "
+                "ADD COLUMN IF NOT EXISTS admin_notified_at TIMESTAMPTZ"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders "
+                "ADD COLUMN IF NOT EXISTS admin_notification_attempts INTEGER DEFAULT 0"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders "
+                "ADD COLUMN IF NOT EXISTS admin_notification_error TEXT"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders "
+                "ADD COLUMN IF NOT EXISTS admin_notification_delivered JSONB"
+            )
         )
         # Заказы, привязанные до появления platform_user_id, переносим на новую колонку.
         await connection.execute(

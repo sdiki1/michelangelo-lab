@@ -156,11 +156,18 @@ class Handlers extends \RS\Event\HandlerAbstract
         }
 
         $app = \RS\Application\Application::getInstance();
-        // Telegram создаёт window.Telegram.WebApp только после подключения
-        // официального SDK. Скрипт должен находиться в HEAD до miniapp.js.
+        // Оба мессенджера создают объекты с initData только после подключения
+        // официальных SDK. Скрипты должны находиться в HEAD до miniapp.js.
         $app->addJs(
             'https://telegram.org/js/telegram-web-app.js?63',
             'telegram-web-app',
+            BP_ROOT,
+            true,
+            ['header' => true, 'unshift' => true]
+        );
+        $app->addJs(
+            'https://st.max.ru/js/max-web-app.js',
+            'max-web-app',
             BP_ROOT,
             true,
             ['header' => true, 'unshift' => true]

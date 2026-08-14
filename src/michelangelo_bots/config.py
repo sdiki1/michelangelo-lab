@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     max_bot_token: str = Field(default="", alias="MAX_BOT_TOKEN")
+    max_bot_username: str = Field(default="", alias="MAX_BOT_USERNAME")
     miniapp_url: AnyUrl | None = Field(default=None, alias="MINIAPP_URL")
     telegram_miniapp_url_override: AnyUrl | None = Field(
         default=None,
@@ -20,6 +21,18 @@ class Settings(BaseSettings):
     )
     admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
     admin_password: str = Field(default="change-me", alias="ADMIN_PASSWORD")
+    order_notification_telegram_chat_ids: str = Field(
+        default="",
+        alias="ORDER_NOTIFICATION_TELEGRAM_CHAT_IDS",
+    )
+    order_notification_max_user_ids: str = Field(
+        default="",
+        alias="ORDER_NOTIFICATION_MAX_USER_IDS",
+    )
+    order_notification_max_chat_ids: str = Field(
+        default="",
+        alias="ORDER_NOTIFICATION_MAX_CHAT_IDS",
+    )
     uploads_dir: Path = Field(default=Path("uploads"), alias="UPLOADS_DIR")
     readyscript_webhook_secret: str = Field(default="", alias="READYSCRIPT_WEBHOOK_SECRET")
     # Общий секрет HMAC-подписи вебхуков модуля michelangelo (ReadyScript → админка).

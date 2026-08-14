@@ -9,6 +9,8 @@ from michelangelo_bots.max_bot import (
     MaxClient,
     action_from_incoming,
     max_keyboard,
+    max_web_app_from_profile,
+    normalize_max_web_app,
     parse_update,
     retry_after_seconds,
 )
@@ -33,21 +35,37 @@ class FakeMaxClient:
         self.answers.append(callback_id)
 
 
-def test_max_keyboard_builds_callback_and_url_buttons() -> None:
+def test_max_keyboard_builds_callback_and_open_app_buttons() -> None:
     keyboard = max_keyboard(
         [
             MenuButton("Миниапп", url="https://example.com/app"),
             MenuButton("О нас", action=Action.ABOUT),
-        ]
+        ],
+        web_app="michelangelo_bot",
     )
 
     buttons = keyboard[0]["payload"]["buttons"]
     assert buttons[0][0] == {
+        "type": "open_app",
+        "text": "Миниапп",
+        "web_app": "michelangelo_bot",
+    }
+    assert buttons[1][0] == {"type": "callback", "text": "О нас", "payload": "about"}
+
+
+def test_max_keyboard_falls_back_to_link_without_bot_username() -> None:
+    keyboard = max_keyboard([MenuButton("Миниапп", url="https://example.com/app")])
+
+    assert keyboard[0]["payload"]["buttons"][0][0] == {
         "type": "link",
         "text": "Миниапп",
         "url": "https://example.com/app",
     }
-    assert buttons[1][0] == {"type": "callback", "text": "О нас", "payload": "about"}
+
+
+def test_max_web_app_uses_profile_username() -> None:
+    assert normalize_max_web_app("@michelangelo_bot") == "michelangelo_bot"
+    assert max_web_app_from_profile({"username": "michelangelo_bot"}) == "michelangelo_bot"
 
 
 def test_parse_message_created_update() -> None:

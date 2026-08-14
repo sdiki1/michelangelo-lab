@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from michelangelo_bots.config import Settings
 from michelangelo_bots.db import BotBroadcast, BotUser
-from michelangelo_bots.max_bot import MaxClient
+from michelangelo_bots.max_bot import MaxClient, max_web_app_from_profile, normalize_max_web_app
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,26 @@ async def send_broadcast(
             base_url=str(settings.max_api_base_url),
             http_client=http_client,
         )
+        max_web_app = normalize_max_web_app(settings.max_bot_username)
+        if broadcast.include_miniapp_button and not max_web_app:
+            try:
+                max_web_app = max_web_app_from_profile(await max_client.get_me())
+            except httpx.HTTPError:
+                logger.warning(
+                    "Could not resolve MAX bot username; broadcast button will be an external link"
+                )
         for user in users:
             try:
                 if user.platform == "telegram":
                     await send_telegram_broadcast(http_client, settings, broadcast, user)
                 elif user.platform == "max":
-                    await send_max_broadcast(max_client, settings, broadcast, user)
+                    await send_max_broadcast(
+                        max_client,
+                        settings,
+                        broadcast,
+                        user,
+                        web_app=max_web_app,
+                    )
                 else:
                     continue
                 broadcast.success_count += 1
@@ -108,6 +122,8 @@ async def send_max_broadcast(
     settings: Settings,
     broadcast: BotBroadcast,
     user: BotUser,
+    *,
+    web_app: str | None = None,
 ) -> None:
     if not settings.max_bot_token:
         raise RuntimeError("MAX_BOT_TOKEN is not set")
@@ -121,7 +137,10 @@ async def send_max_broadcast(
 
     attachments = []
     if broadcast.include_miniapp_button:
-        attachments = max_miniapp_keyboard(str(settings.max_miniapp_url))
+        attachments = max_miniapp_keyboard(
+            str(settings.max_miniapp_url),
+            web_app=web_app,
+        )
 
     await max_client.send_message(user.chat_id or user.platform_user_id, text, attachments)
 
@@ -237,10 +256,19 @@ async def send_telegram_uploaded_media_group(
     response.raise_for_status()
 
 
-def max_miniapp_keyboard(miniapp_url: str) -> list[dict[str, Any]]:
+def max_miniapp_keyboard(
+    miniapp_url: str,
+    *,
+    web_app: str | None = None,
+) -> list[dict[str, Any]]:
+    button: dict[str, Any]
+    if web_app:
+        button = {"type": "open_app", "text": "Миниапп", "web_app": web_app}
+    else:
+        button = {"type": "link", "text": "Миниапп", "url": miniapp_url}
     return [
         {
             "type": "inline_keyboard",
-            "payload": {"buttons": [[{"type": "link", "text": "Миниапп", "url": miniapp_url}]]},
+            "payload": {"buttons": [[button]]},
         }
     ]

@@ -41,6 +41,15 @@ class Track extends \RS\Controller\Front
                     ? substr((string)$data['telegram_version'], 0, 32)
                     : null,
                 'max_object' => !empty($data['max_object']),
+                'max_init_data_length' => isset($data['max_init_data_length'])
+                    ? (int)$data['max_init_data_length']
+                    : 0,
+                'max_platform' => isset($data['max_platform'])
+                    ? substr((string)$data['max_platform'], 0, 32)
+                    : null,
+                'max_version' => isset($data['max_version'])
+                    ? substr((string)$data['max_version'], 0, 32)
+                    : null,
                 'hash_has_telegram' => !empty($data['hash_has_telegram']),
                 'hash_has_max' => !empty($data['hash_has_max']),
                 'referrer' => isset($data['referrer'])

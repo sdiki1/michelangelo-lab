@@ -23,11 +23,21 @@ Required variables:
 Optional:
 
 - `DATABASE_URL` defaults to `postgresql+asyncpg://michelangelo:michelangelo@postgres:5432/michelangelo`
+- `MAX_BOT_USERNAME` — username MAX-бота без `@`; если не указан, загружается через `/me`
 - `MAX_API_BASE_URL` defaults to `https://platform-api.max.ru`
 - `MAX_POLL_TIMEOUT_SECONDS` defaults to `30`
+- `ORDER_NOTIFICATION_TELEGRAM_CHAT_IDS` — Telegram chat ID администраторов через запятую
+- `ORDER_NOTIFICATION_MAX_USER_IDS` — MAX user ID администраторов через запятую
+- `ORDER_NOTIFICATION_MAX_CHAT_IDS` — MAX chat ID административных групп через запятую
 
 `MINIAPP_URL` remains a fallback. If `TELEGRAM_MINIAPP_URL` or `MAX_MINIAPP_URL`
 is set, that platform uses its own miniapp URL.
+
+После первого baseline-запуска ReadyScript polling отправляет администраторам
+уведомление о каждом новом заказе из Telegram/MAX. В сообщение входят номер,
+сумма, состав заказа, имя, телефон, email, messenger user ID и username, если
+он известен боту. Успешные доставки сохраняются в БД и не дублируются на
+следующем цикле polling.
 
 ## Local run
 

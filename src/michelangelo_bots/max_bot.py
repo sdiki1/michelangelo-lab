@@ -26,11 +26,20 @@ DEFAULT_RATE_LIMIT_SLEEP_SECONDS = 60.0
 MAX_RATE_LIMIT_SLEEP_SECONDS = 300.0
 
 
-def max_keyboard(buttons: Sequence[MenuButton]) -> list[dict[str, Any]]:
+def max_keyboard(
+    buttons: Sequence[MenuButton],
+    *,
+    web_app: str | None = None,
+) -> list[dict[str, Any]]:
     rows: list[list[dict[str, Any]]] = []
     for button in buttons:
         if button.url:
-            rows.append([{"type": "link", "text": button.title, "url": button.url}])
+            if web_app:
+                rows.append(
+                    [{"type": "open_app", "text": button.title, "web_app": web_app}]
+                )
+            else:
+                rows.append([{"type": "link", "text": button.title, "url": button.url}])
         elif button.action:
             rows.append(
                 [{"type": "callback", "text": button.title, "payload": button.action.value}]
@@ -113,9 +122,16 @@ class MaxClient:
 
 
 class MaxBot:
-    def __init__(self, client: MaxClient, settings: Settings):
+    def __init__(
+        self,
+        client: MaxClient,
+        settings: Settings,
+        *,
+        web_app: str | None = None,
+    ):
         self._client = client
         self._settings = settings
+        self._web_app = normalize_max_web_app(web_app or settings.max_bot_username)
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         incoming = parse_update(update)
@@ -126,7 +142,10 @@ class MaxBot:
         action = action_from_incoming(incoming)
         await track_max_interaction(incoming, action=action.value, raw_update=update)
         keyboard = (
-            max_keyboard(main_menu_buttons(str(self._settings.max_miniapp_url)))
+            max_keyboard(
+                main_menu_buttons(str(self._settings.max_miniapp_url)),
+                web_app=self._web_app,
+            )
             if action is Action.MAIN_MENU
             else max_keyboard(back_to_main_buttons())
         )
@@ -358,24 +377,35 @@ def extract_user_id(user: dict[str, Any] | None) -> int | str | None:
     return user.get("user_id") or user.get("id")
 
 
-async def log_max_bot_profile(client: MaxClient) -> None:
+def normalize_max_web_app(value: Any) -> str | None:
+    username = str(value or "").strip().lstrip("@")
+    return username or None
+
+
+def max_web_app_from_profile(profile: dict[str, Any]) -> str | None:
+    return normalize_max_web_app(first_value(profile.get("username"), profile.get("login")))
+
+
+async def log_max_bot_profile(client: MaxClient) -> str | None:
     try:
         profile = await client.get_me()
     except httpx.HTTPStatusError as exc:
         logger.warning("Could not load MAX bot profile: %s", exc)
         logger.info("Starting MAX bot polling: profile unavailable")
-        return
+        return None
     except httpx.HTTPError as exc:
         logger.warning("Could not load MAX bot profile: %s", exc)
         logger.info("Starting MAX bot polling: profile unavailable")
-        return
+        return None
 
+    username = max_web_app_from_profile(profile)
     logger.info(
         "Starting MAX bot polling: id=%s username=%s name=%s",
         first_value(profile.get("user_id"), profile.get("id"), profile.get("bot_id")),
-        first_value(profile.get("username"), profile.get("login")),
+        username,
         first_value(profile.get("name"), profile.get("first_name"), profile.get("title")),
     )
+    return username
 
 
 def first_value(*values: Any) -> Any:
@@ -393,9 +423,14 @@ async def run() -> None:
         token=settings.max_bot_token,
         base_url=str(settings.max_api_base_url),
     )
-    bot = MaxBot(client=client, settings=settings)
     try:
-        await log_max_bot_profile(client)
+        profile_web_app = await log_max_bot_profile(client)
+        web_app = normalize_max_web_app(settings.max_bot_username) or profile_web_app
+        if not web_app:
+            logger.warning(
+                "MAX miniapp button will be an external link: set MAX_BOT_USERNAME"
+            )
+        bot = MaxBot(client=client, settings=settings, web_app=web_app)
         await bot.polling()
     finally:
         await client.close()
