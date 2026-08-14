@@ -139,6 +139,20 @@ class MaxBot:
             logger.info("Skipping unsupported MAX update type=%s", update.get("update_type"))
             return
 
+        if is_get_my_id_command(incoming.text):
+            await track_max_interaction(incoming, action="getmyid", raw_update=update)
+            recipient_id = outgoing_recipient_id(incoming)
+            if recipient_id is None:
+                logger.warning("Cannot answer /getmyid without chat_id or user_id: %s", update)
+                return
+            await self._client.send_message(
+                recipient_id,
+                get_my_id_text(incoming),
+                attachments=[],
+                recipient_type=outgoing_recipient_type(incoming),
+            )
+            return
+
         action = action_from_incoming(incoming)
         await track_max_interaction(incoming, action=action.value, raw_update=update)
         keyboard = (
@@ -219,6 +233,26 @@ def action_from_incoming(incoming: IncomingMessage) -> Action:
     except ValueError:
         return Action.MAIN_MENU
 
+
+def is_get_my_id_command(text: str | None) -> bool:
+    if not text:
+        return False
+    command = text.strip().split(maxsplit=1)[0].lower()
+    return command.split("@", 1)[0] == "/getmyid"
+
+
+def get_my_id_text(incoming: IncomingMessage) -> str:
+    if incoming.user_id is None:
+        return (
+            "Не удалось определить MAX user ID. "
+            "Отправьте команду /getmyid боту в личном чате."
+        )
+    return (
+        "Ваш MAX user ID:\n"
+        f"{incoming.user_id}\n\n"
+        "Строка для .env:\n"
+        f"ORDER_NOTIFICATION_MAX_USER_IDS={incoming.user_id}"
+    )
 
 def outgoing_recipient_id(incoming: IncomingMessage) -> int | str | None:
     return incoming.chat_id or incoming.user_id

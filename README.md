@@ -39,6 +39,10 @@ is set, that platform uses its own miniapp URL.
 он известен боту. Успешные доставки сохраняются в БД и не дублируются на
 следующем цикле polling.
 
+Чтобы узнать собственный MAX user ID для
+`ORDER_NOTIFICATION_MAX_USER_IDS`, отправьте MAX-боту команду `/getmyid` в
+личном чате. Бот вернёт ID и готовую строку для `.env`.
+
 ## Local run
 
 ```bash

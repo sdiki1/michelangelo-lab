@@ -8,6 +8,8 @@ from michelangelo_bots.max_bot import (
     MaxBot,
     MaxClient,
     action_from_incoming,
+    get_my_id_text,
+    is_get_my_id_command,
     max_keyboard,
     max_web_app_from_profile,
     normalize_max_web_app,
@@ -134,6 +136,46 @@ def test_parse_direct_message_without_chat_id_uses_sender_user_id() -> None:
         raw_user={"user_id": 456, "username": "ivan"},
     )
 
+
+def test_get_my_id_command_parser_and_text() -> None:
+    incoming = IncomingMessage(chat_id=None, user_id=456, text="/getmyid")
+
+    assert is_get_my_id_command("  /GETMYID@michelangelo_bot  ")
+    assert not is_get_my_id_command("/start")
+    assert "ORDER_NOTIFICATION_MAX_USER_IDS=456" in get_my_id_text(incoming)
+
+
+@pytest.mark.asyncio
+async def test_max_bot_returns_sender_user_id_for_getmyid() -> None:
+    client = FakeMaxClient()
+    settings = Settings(
+        MAX_BOT_TOKEN="token",
+        MINIAPP_URL="https://example.com/app",
+        MAX_API_BASE_URL="https://botapi.max.ru",
+        _env_file=None,
+    )
+    bot = MaxBot(client=client, settings=settings)  # type: ignore[arg-type]
+
+    await bot.handle_update(
+        {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 456, "username": "admin"},
+                "recipient": {"user_id": 244666192},
+                "body": {"text": "/getmyid"},
+            },
+        }
+    )
+
+    assert client.messages == [
+        (
+            456,
+            "Ваш MAX user ID:\n456\n\n"
+            "Строка для .env:\nORDER_NOTIFICATION_MAX_USER_IDS=456",
+            [],
+            "user_id",
+        )
+    ]
 
 @pytest.mark.asyncio
 async def test_max_bot_sends_about_for_callback() -> None:
