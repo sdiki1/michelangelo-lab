@@ -2,6 +2,7 @@
 namespace Michelangelo\Config;
 
 use Michelangelo\Model\Identity;
+use Michelangelo\Model\Diagnostic;
 use RS\Orm\Type;
 
 /**
@@ -14,6 +15,7 @@ class Handlers extends \RS\Event\HandlerAbstract
         $this
             ->bind('orm.init.shop-order')
             ->bind('orm.beforewrite.shop-order')
+            ->bind('orm.afterwrite.shop-order')
             ->bind('controller.beforewrap')
             ->bind('getroute');
     }
@@ -73,12 +75,25 @@ class Handlers extends \RS\Event\HandlerAbstract
     {
         $order = self::extractOrder($params);
         if (!$order) {
+            Diagnostic::write('order.before.no_order', [
+                'session' => Diagnostic::sessionFingerprint(),
+                'params_type' => gettype($params),
+            ]);
             return $params;
         }
 
         self::migrateLegacyIdentity($order);
 
         $identity = Identity::current();
+        Diagnostic::write('order.before', [
+            'order_id' => isset($order['id']) ? $order['id'] : null,
+            'session' => Diagnostic::sessionFingerprint(),
+            'identity_present' => (bool)$identity,
+            'identity_verified' => $identity && !empty($identity['verified']),
+            'platform' => $identity ? $identity['platform'] : null,
+            'telegram_before' => Diagnostic::maskedUserId($order['telegram_user_id']),
+            'max_before' => Diagnostic::maskedUserId($order['max_user_id']),
+        ]);
         if (!$identity || empty($identity['verified'])) {
             return $params;
         }
@@ -87,8 +102,31 @@ class Handlers extends \RS\Event\HandlerAbstract
         if ($field && empty($order[$field])) {
             $order[$field] = $identity['platform_user_id'];
             $order['ml_bind_source'] = 'miniapp_verified';
+            Diagnostic::write('order.identity_stamped', [
+                'order_id' => isset($order['id']) ? $order['id'] : null,
+                'session' => Diagnostic::sessionFingerprint(),
+                'field' => $field,
+                'user_id' => Diagnostic::maskedUserId($identity['platform_user_id']),
+            ]);
         }
 
+        return $params;
+    }
+
+    public static function ormAfterWriteShopOrder($params)
+    {
+        $order = self::extractOrder($params);
+        Diagnostic::write('order.after', [
+            'order_found' => (bool)$order,
+            'order_id' => $order && isset($order['id']) ? $order['id'] : null,
+            'session' => Diagnostic::sessionFingerprint(),
+            'write_flag' => is_array($params) && isset($params['flag']) ? $params['flag'] : null,
+            'telegram_saved' => $order ? Diagnostic::maskedUserId($order['telegram_user_id']) : null,
+            'max_saved' => $order ? Diagnostic::maskedUserId($order['max_user_id']) : null,
+            'bind_source' => $order && isset($order['ml_bind_source'])
+                ? $order['ml_bind_source']
+                : null,
+        ]);
         return $params;
     }
 
@@ -118,8 +156,18 @@ class Handlers extends \RS\Event\HandlerAbstract
         }
 
         $app = \RS\Application\Application::getInstance();
+        // Telegram создаёт window.Telegram.WebApp только после подключения
+        // официального SDK. Скрипт должен находиться в HEAD до miniapp.js.
+        $app->addJs(
+            'https://telegram.org/js/telegram-web-app.js?63',
+            'telegram-web-app',
+            BP_ROOT,
+            true,
+            ['header' => true, 'unshift' => true]
+        );
         $app->addJsVar('michelangeloIdentity', [
             'url' => \RS\Router\Manager::obj()->getUrl('michelangelo-front-track'),
+            'debug' => !empty($config['diagnostic_log']),
         ]);
         $app->addJs('%michelangelo%/miniapp.js');
         return $params;

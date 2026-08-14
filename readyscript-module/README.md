@@ -67,3 +67,51 @@
 
 Если новые поля не видны в API, обновите модуль ещё раз, очистите кэш и проверьте
 параметр `appVisible` в справке `/api-<ключ>/help/`.
+
+### Быстрая диагностика
+
+- `/modules/michelangelo/view/js/miniapp.js` должен отвечать HTTP 200;
+- `POST /michelangelo/track/` с пустым/неверным `init_data` должен отвечать JSON
+  с HTTP 422, но не HTML-ошибкой 503;
+- настройки JS в ReadyScript 6 находятся в `window.global.michelangeloIdentity`.
+
+Для подробной трассировки включите настройку **«Диагностический журнал
+привязки»**, откройте магазин из мессенджера и создайте новый заказ. Затем на
+сервере выполните:
+
+```bash
+tail -n 200 /path/to/readyscript/storage/logs/michelangelo.log
+```
+
+Нормальная цепочка Telegram выглядит так:
+
+```text
+track.received
+track.accepted
+order.before
+order.identity_stamped
+order.after
+```
+
+Для Telegram модуль автоматически подключает официальный
+`https://telegram.org/js/telegram-web-app.js`. Кнопка магазина в сообщении бота
+должна быть кнопкой типа `web_app`, а не обычной URL-кнопкой. Обычная ссылка,
+даже открытая внутри встроенного браузера Telegram, не получает `initData`.
+
+Расшифровка проблем:
+
+- только `browser.probe` — браузер не предоставил `initData`, обычно магазин
+  открыт обычной ссылкой или на неверном домене;
+- `track.rejected` — неверный/пустой токен бота, устаревший либо повреждённый
+  `initData`; поле `verify_error` уточняет причину (`hash_mismatch`, `expired`,
+  `missing_user` и т.д.);
+- есть `track.accepted`, но у `order.before` другая метка `session` — потеряна
+  PHP-cookie, заказ оформляется на другом домене или через другой backend;
+- `order.before` содержит `identity_present=0` — в сессии заказа нет identity;
+- есть `order.identity_stamped`, но `order.after` пустой — проблема записи поля
+  в БД; повторно обновите модуль и структуру базы;
+- нет событий `order.*` — модуль не активен для сайта, на котором создаётся
+  заказ, либо не очищен кэш обработчиков.
+
+Журнал маскирует ID и не записывает токены или полный `initData`. После
+диагностики выключите настройку.

@@ -29,6 +29,12 @@ class File extends \RS\Orm\ConfigObject
                 'description' => 'Максимальный возраст initData, секунд',
                 'default' => 86400,
             ]),
+            'diagnostic_log' => new Type\Integer([
+                'description' => 'Включить диагностический журнал привязки',
+                'hint' => 'Файл: /storage/logs/michelangelo.log. Выключите после диагностики.',
+                'checkboxview' => [1, 0],
+                'default' => 0,
+            ]),
         ]);
     }
 
@@ -39,6 +45,7 @@ class File extends \RS\Orm\ConfigObject
             'telegram_bot_token' => '',
             'max_bot_token' => '',
             'init_data_max_age' => 86400,
+            'diagnostic_log' => 0,
         ];
     }
 }

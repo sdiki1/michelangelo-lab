@@ -10,30 +10,38 @@ class Identity
     const PLATFORM_TELEGRAM = 'telegram';
     const PLATFORM_MAX = 'max';
 
+    /** @var string|null Безопасный код последней ошибки проверки. */
+    protected static $last_verify_error;
+
     public static function verify($platform, $init_data, $bot_token, $max_age = 86400)
     {
+        self::$last_verify_error = null;
         $platform = self::normalizePlatform($platform);
         $init_data = (string)$init_data;
         $bot_token = trim((string)$bot_token);
         if (!$platform || $init_data === '' || $bot_token === '') {
+            self::$last_verify_error = 'missing_input';
             return null;
         }
 
         $parsed = self::parseInitData($init_data);
         if (!$parsed || empty($parsed['hash'])) {
+            self::$last_verify_error = 'malformed_or_missing_hash';
             return null;
         }
 
         $received_hash = strtolower((string)$parsed['hash']);
         unset($parsed['hash']);
-        if (isset($parsed['signature'])) {
-            unset($parsed['signature']);
-        }
+
+        // В современном Telegram initData может присутствовать Ed25519-поле
+        // signature. При классической проверке с bot token из строки данных
+        // исключается только hash; signature остаётся и участвует в HMAC.
 
         ksort($parsed, SORT_STRING);
         $pairs = [];
         foreach ($parsed as $key => $value) {
             if (is_array($value)) {
+                self::$last_verify_error = 'non_scalar_parameter';
                 return null;
             }
             $pairs[] = $key . '=' . $value;
@@ -45,23 +53,28 @@ class Identity
         $secret = hash_hmac('sha256', $bot_token, 'WebAppData', true);
         $calculated_hash = hash_hmac('sha256', $check_string, $secret);
         if (!hash_equals($calculated_hash, $received_hash)) {
+            self::$last_verify_error = 'hash_mismatch';
             return null;
         }
 
         $auth_date = isset($parsed['auth_date']) ? (int)$parsed['auth_date'] : 0;
         if (!$auth_date || $auth_date > time() + 300) {
+            self::$last_verify_error = 'invalid_auth_date';
             return null;
         }
         if ((int)$max_age > 0 && time() - $auth_date > (int)$max_age) {
+            self::$last_verify_error = 'expired';
             return null;
         }
 
         $user = isset($parsed['user']) ? json_decode($parsed['user'], true) : null;
         if (!is_array($user) || !isset($user['id'])) {
+            self::$last_verify_error = 'missing_user';
             return null;
         }
         $user_id = trim((string)$user['id']);
         if ($user_id === '') {
+            self::$last_verify_error = 'empty_user_id';
             return null;
         }
 
@@ -73,6 +86,11 @@ class Identity
             'last_name' => self::stringValue($user, 'last_name'),
             'verified' => true,
         ];
+    }
+
+    public static function lastVerifyError()
+    {
+        return self::$last_verify_error;
     }
 
     public static function store(array $identity)
