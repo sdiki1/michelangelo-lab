@@ -39,6 +39,10 @@ is set, that platform uses its own miniapp URL.
 он известен боту. Успешные доставки сохраняются в БД и не дублируются на
 следующем цикле polling.
 
+Уведомление о Telegram-заказе содержит кнопку «Написать пользователю»: она
+ведёт на `https://t.me/<username>`, а при отсутствии username — на
+`tg://user?id=<telegram_user_id>`.
+
 Чтобы узнать собственный MAX user ID для
 `ORDER_NOTIFICATION_MAX_USER_IDS`, отправьте MAX-боту команду `/getmyid` в
 личном чате. Бот вернёт ID и готовую строку для `.env`.

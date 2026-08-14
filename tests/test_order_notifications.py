@@ -4,6 +4,8 @@ from michelangelo_bots.order_notifications import (
     admin_targets,
     build_order_notification,
     parse_recipient_ids,
+    telegram_contact_reply_markup,
+    telegram_user_url,
 )
 
 
@@ -56,3 +58,42 @@ def test_build_order_notification_contains_platform_and_contact() -> None:
     assert "Username: @ivan" in message
     assert "MAX user ID: 456" in message
     assert "• Набор × 2" in message
+
+
+def test_telegram_contact_button_prefers_username() -> None:
+    order = BotOrder(
+        external_source="readyscript",
+        external_order_id="53",
+        platform="telegram",
+        platform_user_id="123",
+    )
+    user = BotUser(platform="telegram", platform_user_id="123", username="ivan")
+
+    assert telegram_user_url(order, user) == "https://t.me/ivan"
+    assert telegram_contact_reply_markup(order, user) == {
+        "inline_keyboard": [
+            [{"text": "✉️ Написать пользователю", "url": "https://t.me/ivan"}]
+        ]
+    }
+
+
+def test_telegram_contact_button_falls_back_to_user_id() -> None:
+    order = BotOrder(
+        external_source="readyscript",
+        external_order_id="54",
+        platform="telegram",
+        platform_user_id="123",
+    )
+
+    assert telegram_user_url(order, None) == "tg://user?id=123"
+
+
+def test_max_order_has_no_telegram_contact_button() -> None:
+    order = BotOrder(
+        external_source="readyscript",
+        external_order_id="55",
+        platform="max",
+        platform_user_id="456",
+    )
+
+    assert telegram_contact_reply_markup(order, None) is None

@@ -166,7 +166,15 @@ async def deliver_pending_order_notifications(
                 if target.key in delivered:
                     continue
                 try:
-                    await send_notification(http_client, max_client, settings, target, message)
+                    await send_notification(
+                        http_client,
+                        max_client,
+                        settings,
+                        target,
+                        message,
+                        order=order,
+                        user=user,
+                    )
                 except Exception as exc:
                     order.admin_notification_error = str(exc)[:1000]
                     logger.exception(
@@ -195,13 +203,20 @@ async def send_notification(
     settings: Settings,
     target: AdminTarget,
     message: str,
+    *,
+    order: BotOrder,
+    user: BotUser | None,
 ) -> None:
     if target.platform == "telegram":
         if not settings.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+        payload: dict[str, object] = {"chat_id": target.recipient_id, "text": message}
+        reply_markup = telegram_contact_reply_markup(order, user)
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         response = await http_client.post(
             f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-            json={"chat_id": target.recipient_id, "text": message},
+            json=payload,
         )
         if response.is_error:
             raise RuntimeError(
@@ -220,3 +235,36 @@ async def send_notification(
         [],
         recipient_type=target.recipient_type,
     )
+
+
+def telegram_contact_reply_markup(
+    order: BotOrder,
+    user: BotUser | None,
+) -> dict[str, list[list[dict[str, str]]]] | None:
+    url = telegram_user_url(order, user)
+    if not url:
+        return None
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "✉️ Написать пользователю",
+                    "url": url,
+                }
+            ]
+        ]
+    }
+
+
+def telegram_user_url(order: BotOrder, user: BotUser | None) -> str | None:
+    if order.platform != "telegram":
+        return None
+
+    username = value_from_user(user, "username")
+    if username:
+        return f"https://t.me/{username.lstrip('@')}"
+
+    telegram_user_id = order.platform_user_id or order.telegram_user_id
+    if telegram_user_id:
+        return f"tg://user?id={telegram_user_id}"
+    return None
