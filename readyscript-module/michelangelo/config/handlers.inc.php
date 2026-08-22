@@ -156,27 +156,17 @@ class Handlers extends \RS\Event\HandlerAbstract
         }
 
         $app = \RS\Application\Application::getInstance();
-        // Оба мессенджера создают объекты с initData только после подключения
-        // официальных SDK. Скрипты должны находиться в HEAD до miniapp.js.
-        $app->addJs(
-            'https://telegram.org/js/telegram-web-app.js?63',
-            'telegram-web-app',
-            BP_ROOT,
-            true,
-            ['header' => true, 'unshift' => true]
-        );
-        $app->addJs(
-            'https://st.max.ru/js/max-web-app.js',
-            'max-web-app',
-            BP_ROOT,
-            true,
-            ['header' => true, 'unshift' => true]
-        );
+        // Внешние SDK здесь намеренно не подключаются: синхронный script в
+        // HEAD блокирует всю витрину, если CDN мессенджера недоступен.
+        // miniapp-2.2.1.js читает initData из URL и после window.load асинхронно
+        // загружает только SDK фактической платформы.
         $app->addJsVar('michelangeloIdentity', [
             'url' => \RS\Router\Manager::obj()->getUrl('michelangelo-front-track'),
             'debug' => !empty($config['diagnostic_log']),
         ]);
-        $app->addJs('%michelangelo%/miniapp.js');
+        // Версия включена в имя файла: Telegram/MAX WebView агрессивно
+        // кэшируют JavaScript и иначе могут продолжить исполнять старый код.
+        $app->addJs('%michelangelo%/miniapp-2.2.1.js');
         return $params;
     }
 

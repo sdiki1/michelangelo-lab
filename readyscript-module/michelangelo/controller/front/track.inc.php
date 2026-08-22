@@ -30,6 +30,9 @@ class Track extends \RS\Controller\Front
             Diagnostic::write('browser.probe', [
                 'session' => Diagnostic::sessionFingerprint(),
                 'path' => isset($data['path']) ? $data['path'] : null,
+                'detected_platform' => isset($data['detected_platform'])
+                    ? substr((string)$data['detected_platform'], 0, 32)
+                    : null,
                 'telegram_object' => !empty($data['telegram_object']),
                 'telegram_init_data_length' => isset($data['telegram_init_data_length'])
                     ? (int)$data['telegram_init_data_length']

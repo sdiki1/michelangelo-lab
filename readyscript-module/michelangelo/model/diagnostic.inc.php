@@ -41,9 +41,21 @@ class Diagnostic
             . PHP_EOL;
         $root = dirname(dirname(dirname(__DIR__)));
         $file = $root . '/storage/logs/michelangelo.log';
-        if (@file_put_contents($file, $line, FILE_APPEND | LOCK_EX) === false) {
+        // Диагностика не должна задерживать витрину в ожидании файлового lock.
+        // Если другой PHP-процесс уже пишет журнал, эту диагностическую строку
+        // безопаснее пропустить, чем блокировать пользовательский запрос.
+        $handle = @fopen($file, 'ab');
+        if ($handle === false) {
             error_log('[michelangelo] ' . trim($line));
+            return;
         }
+        if (!@flock($handle, LOCK_EX | LOCK_NB)) {
+            @fclose($handle);
+            return;
+        }
+        @fwrite($handle, $line);
+        @flock($handle, LOCK_UN);
+        @fclose($handle);
     }
 
     public static function sessionFingerprint()
