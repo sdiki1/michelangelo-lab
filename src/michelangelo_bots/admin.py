@@ -624,6 +624,29 @@ def events_table(rows: list[tuple[BotEvent, BotUser]]) -> str:
 
 
 def page(title: str, body: str) -> str:
+    page_meta = {
+        "Статистика": ("Обзор", "Главные показатели и последние действия пользователей"),
+        "Список клиентов": ("Клиенты", "Единая база клиентов из Telegram и MAX"),
+        "Заказы": ("Заказы", "Заказы и связь с профилями пользователей"),
+        "Рассылка по клиентам": ("Рассылки", "Создание и история сообщений для клиентов"),
+        "Путь клиента": ("Путь клиента", "Хронология взаимодействий пользователей с ботами"),
+        "Пользователи": ("Пользователи", "Аккаунты, активность и данные пользователей"),
+    }
+    section, subtitle = page_meta.get(
+        title,
+        ("Пользователи", "Профиль, заказы и история взаимодействий пользователя"),
+    )
+    navigation = "".join(
+        nav_item(label, href, icon_name, section == label)
+        for label, href, icon_name in (
+            ("Обзор", "/", "grid"),
+            ("Клиенты", "/clients", "users"),
+            ("Заказы", "/orders", "bag"),
+            ("Рассылки", "/broadcasts", "mail"),
+            ("Путь клиента", "/client-paths", "route"),
+            ("Пользователи", "/users", "user"),
+        )
+    )
     return f"""
     <!doctype html>
     <html lang="ru">
@@ -632,66 +655,148 @@ def page(title: str, body: str) -> str:
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{e(title)} | Michelangelo Admin</title>
         <style>
-          :root {{ --bg: #f4f6f8; --panel: #ffffff; --ink: #1f2933; --muted: #667085; --line: #d7dde3; --head: #132238; --accent: #0b63ce; --radius: 16px; }}
+          :root {{ --bg: #fafbff; --panel: #fff; --ink: #151932; --muted: #737893; --line: #e5e8f4; --accent: #5364ff; --accent-soft: #f2f3ff; --success: #20a46b; --warning: #e59b2f; --danger: #e45d6d; --radius: 12px; --sidebar: 276px; }}
           * {{ box-sizing: border-box; }}
-          body {{ margin: 0; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }}
-          header {{ background: var(--head); color: white; padding: 14px 22px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-bottom-left-radius: 22px; border-bottom-right-radius: 22px; }}
-          header a {{ color: white; text-decoration: none; font-weight: 700; padding: 9px 12px; border-radius: 999px; background: rgba(255,255,255,.08); }}
-          header a:hover {{ background: rgba(255,255,255,.16); }}
-          main {{ padding: 24px; max-width: 1480px; margin: 0 auto; }}
-          h1 {{ margin: 0 0 20px; font-size: 26px; }}
-          h2 {{ margin: 0 0 12px; font-size: 18px; }}
-          a {{ color: var(--accent); }}
-          .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }}
-          .stat {{ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; box-shadow: 0 8px 22px rgba(18,34,56,.05); }}
-          .stat span {{ color: var(--muted); }}
-          .stat strong {{ display: block; font-size: 30px; margin-top: 4px; }}
-          .grid {{ display: grid; grid-template-columns: minmax(280px, 420px) 1fr; gap: 20px; align-items: start; }}
-          article, .profile {{ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 20px; box-shadow: 0 8px 22px rgba(18,34,56,.05); }}
-          .table-wrap {{ overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 8px 22px rgba(18,34,56,.05); }}
+          html {{ min-width: 320px; }}
+          body {{ margin: 0; font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }}
+          body::before {{ content: ""; position: fixed; inset: 0 0 auto; height: 3px; z-index: 20; background: linear-gradient(90deg,#62be91,#74c99d 36%,#8bd1aa); }}
+          a {{ color: var(--accent); text-decoration: none; }}
+          .icon {{ width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }}
+          .sidebar {{ position: fixed; inset: 3px auto 0 0; width: var(--sidebar); background: #fff; border-right: 1px solid var(--line); z-index: 10; display: flex; flex-direction: column; }}
+          .brand {{ height: 68px; display: flex; align-items: center; padding: 0 20px; border-bottom: 1px solid var(--line); color: var(--accent); font-size: 20px; font-weight: 800; letter-spacing: -.02em; }}
+          .brand-mark {{ width: 34px; height: 34px; margin-right: 10px; border-radius: 10px; display: grid; place-items: center; color: white; background: linear-gradient(145deg,#6d79ff,#4c5cff); box-shadow: 0 6px 15px rgba(83,100,255,.25); }}
+          .brand-mark .icon {{ width: 19px; }}
+          .nav {{ padding: 20px 12px; display: grid; gap: 5px; }}
+          .nav-label {{ padding: 0 12px 7px; color: #a0a5b9; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }}
+          .nav a {{ display: flex; align-items: center; gap: 13px; min-height: 44px; padding: 0 13px; color: #5e637d; border-radius: 9px; font-weight: 650; transition: .18s ease; }}
+          .nav a:hover {{ color: var(--accent); background: #f7f7ff; }}
+          .nav a.active {{ color: var(--accent); background: var(--accent-soft); }}
+          .nav a.active::before {{ content: ""; width: 3px; height: 22px; margin-left: -13px; margin-right: -3px; border-radius: 0 4px 4px 0; background: var(--accent); }}
+          .sidebar-foot {{ margin-top: auto; padding: 18px 24px 24px; border-top: 1px solid #f0f1f7; }}
+          .sidebar-foot a {{ display: flex; align-items: center; gap: 10px; color: var(--accent); font-weight: 700; }}
+          .workspace {{ min-height: 100vh; margin-left: var(--sidebar); }}
+          .topbar {{ height: 68px; padding: 0 28px; background: #fff; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 20px; }}
+          .breadcrumbs {{ display: flex; align-items: center; gap: 11px; min-width: 0; color: #7d829d; font-weight: 650; }}
+          .breadcrumbs .home {{ color: #727893; display: grid; place-items: center; }}
+          .breadcrumbs .separator {{ color: #bdc1d0; }}
+          .breadcrumbs strong {{ color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+          .top-actions {{ display: flex; align-items: center; gap: 14px; }}
+          .credit {{ color: var(--accent); font-weight: 750; }}
+          .avatar {{ width: 36px; height: 36px; border-radius: 50%; background: #f1f2f9; color: #858aa3; display: grid; place-items: center; font-weight: 800; }}
+          .mobile-menu {{ display: none; padding: 6px; color: #6d728c; background: none; border: 0; }}
+          main {{ padding: 30px clamp(22px,4vw,64px) 60px; max-width: 1680px; margin: 0 auto; }}
+          .page-heading {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 24px; }}
+          h1 {{ margin: 0; font-size: 28px; line-height: 1.2; letter-spacing: -.025em; }}
+          .page-heading p {{ margin: 7px 0 0; color: var(--muted); }}
+          h2 {{ margin: 0 0 14px; font-size: 17px; letter-spacing: -.01em; }}
+          .stats {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 22px; }}
+          .stat {{ position: relative; overflow: hidden; min-height: 128px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 21px 22px; box-shadow: 0 3px 12px rgba(36,44,92,.035); }}
+          .stat::after {{ content: ""; position: absolute; width: 76px; height: 76px; right: -22px; bottom: -28px; border-radius: 50%; background: var(--accent-soft); }}
+          .stat span {{ color: var(--muted); font-weight: 600; }}
+          .stat strong {{ display: block; font-size: 32px; line-height: 1; margin-top: 15px; letter-spacing: -.04em; }}
+          .grid {{ display: grid; grid-template-columns: minmax(290px, .7fr) minmax(500px, 1.5fr); gap: 20px; align-items: start; }}
+          article, .profile {{ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; margin-bottom: 20px; box-shadow: 0 3px 12px rgba(36,44,92,.035); }}
+          .table-wrap {{ overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 3px 12px rgba(36,44,92,.035); }}
           table {{ width: 100%; border-collapse: separate; border-spacing: 0; background: transparent; }}
-          th, td {{ padding: 11px 13px; border-bottom: 1px solid #e5e9ee; text-align: left; vertical-align: top; }}
-          th {{ background: #eef2f5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #344054; }}
+          th, td {{ padding: 14px 15px; border-bottom: 1px solid #eef0f6; text-align: left; vertical-align: middle; white-space: nowrap; }}
+          td {{ color: #4d526b; }}
+          th {{ background: #fafaff; font-size: 11px; text-transform: uppercase; letter-spacing: .055em; color: #898ea5; font-weight: 750; }}
           th:first-child {{ border-top-left-radius: var(--radius); }}
           th:last-child {{ border-top-right-radius: var(--radius); }}
           tr:last-child td {{ border-bottom: 0; }}
-          .filters {{ display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }}
-          input, select, textarea, button {{ padding: 10px 12px; border: 1px solid #bdc7d1; border-radius: 12px; background: white; font: inherit; }}
+          tbody tr {{ transition: background .15s ease; }}
+          tbody tr:hover {{ background: #fbfbff; }}
+          td a {{ font-weight: 700; }}
+          .filters {{ display: flex; gap: 10px; margin-bottom: 16px; padding: 14px; flex-wrap: wrap; background: white; border: 1px solid var(--line); border-radius: var(--radius); }}
+          input, select, textarea, button {{ padding: 10px 12px; border: 1px solid #daddE9; border-radius: 8px; background: white; color: var(--ink); font: inherit; outline: none; transition: border .16s,box-shadow .16s,background .16s; }}
+          input:focus, select:focus, textarea:focus {{ border-color: #8f9aff; box-shadow: 0 0 0 3px rgba(83,100,255,.1); }}
           input, select {{ min-height: 42px; }}
+          .filters input[name="q"] {{ flex: 1 1 300px; }}
           textarea {{ resize: vertical; width: 100%; }}
-          button {{ background: var(--head); color: white; cursor: pointer; border-color: var(--head); font-weight: 700; }}
-          button.secondary {{ background: #eef2f5; color: var(--ink); border-color: var(--line); }}
-          label {{ display: grid; gap: 6px; font-weight: 700; }}
+          button {{ min-height: 42px; background: var(--accent); color: white; cursor: pointer; border-color: var(--accent); font-weight: 700; box-shadow: 0 5px 12px rgba(83,100,255,.16); }}
+          button:hover {{ background: #4657ee; }}
+          button.secondary {{ background: var(--accent-soft); color: var(--accent); border-color: #dfe2ff; box-shadow: none; }}
+          label {{ display: grid; gap: 7px; color: #5d6279; font-weight: 700; }}
           label input, label select, label textarea {{ font-weight: 400; }}
           .broadcast-form {{ display: grid; gap: 14px; max-width: 860px; }}
           .form-grid {{ display: grid; grid-template-columns: 220px 1fr; gap: 12px; }}
           .checkbox {{ display: flex; align-items: center; gap: 8px; }}
           .checkbox input {{ min-height: auto; }}
           .actions {{ display: flex; gap: 10px; flex-wrap: wrap; }}
-          dl {{ display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; margin: 0; }}
-          dt {{ font-weight: 700; }}
-          dd {{ margin: 0; }}
+          dl {{ display: grid; grid-template-columns: 220px 1fr; gap: 0; margin: 0; }}
+          dt, dd {{ padding: 11px 0; border-bottom: 1px solid #eff0f6; }}
+          dt {{ color: #858aa0; font-weight: 600; }}
+          dd {{ margin: 0; color: var(--ink); font-weight: 600; }}
           pre {{ overflow: auto; background: #f1f3f5; padding: 12px; border-radius: 14px; }}
           code {{ background: #eef2f5; padding: 2px 6px; border-radius: 8px; }}
           .muted {{ color: var(--muted); }}
-          @media (max-width: 900px) {{ .stats, .grid, .form-grid {{ grid-template-columns: 1fr; }} main {{ padding: 16px; }} }}
+          .badge {{ display: inline-flex; align-items: center; gap: 6px; min-height: 25px; padding: 3px 9px; border-radius: 999px; background: #f1f2f8; color: #656a80; font-size: 12px; font-weight: 700; }}
+          .badge::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }}
+          .badge.active, .badge.sent {{ color: var(--success); background: #ebfaf3; }}
+          .badge.lead, .badge.draft {{ color: var(--warning); background: #fff7e8; }}
+          .badge.blocked, .badge.failed, .badge.partial_failed {{ color: var(--danger); background: #fff0f2; }}
+          @media (max-width: 1080px) {{ .stats {{ grid-template-columns: repeat(2,1fr); }} .grid {{ grid-template-columns: 1fr; }} }}
+          @media (max-width: 760px) {{
+            :root {{ --sidebar: 250px; }}
+            .sidebar {{ transform: translateX(-100%); transition: transform .2s ease; box-shadow: 16px 0 40px rgba(28,34,70,.12); }}
+            body.menu-open .sidebar {{ transform: translateX(0); }}
+            .workspace {{ margin-left: 0; }} .mobile-menu {{ display: grid; }} .breadcrumbs .home, .breadcrumbs .separator:first-of-type {{ display: none; }}
+            .topbar {{ padding: 0 16px; }} main {{ padding: 22px 16px 45px; }} .stats {{ grid-template-columns: 1fr; }}
+            .page-heading {{ align-items: flex-start; }} h1 {{ font-size: 24px; }} .credit {{ display: none; }} .form-grid, dl {{ grid-template-columns: 1fr; }}
+            dt {{ padding-bottom: 2px; border-bottom: 0; }} dd {{ padding-top: 2px; }}
+          }}
         </style>
       </head>
       <body>
-        <header>
-          <a href="/">Статистика</a>
-          <a href="/clients">Клиенты</a>
-          <a href="/orders">Заказы</a>
-          <a href="/broadcasts">Рассылки</a>
-          <a href="/client-paths">Путь клиента</a>
-          <a href="/users">Пользователи</a>
-        </header>
-        <main>
-          <h1>{e(title)}</h1>
-          {body}
-        </main>
+        {svg_sprite()}
+        <aside class="sidebar">
+          <a class="brand" href="/"><span class="brand-mark">{icon("bot")}</span>Michelangelo</a>
+          <nav class="nav"><div class="nav-label">Управление</div>{navigation}</nav>
+          <div class="sidebar-foot"><a href="/docs">{icon("book")} Документация</a></div>
+        </aside>
+        <div class="workspace">
+          <header class="topbar">
+            <div class="breadcrumbs">
+              <button class="mobile-menu" type="button" aria-label="Открыть меню" onclick="document.body.classList.toggle('menu-open')">{icon("menu")}</button>
+              <a class="home" href="/">{icon("home")}</a><span class="separator">›</span>
+              <span>Michelangelo Bots</span><span class="separator">›</span><strong>{e(section)}</strong>
+            </div>
+            <div class="top-actions"><span class="credit">0 ₽</span><span class="avatar">В</span></div>
+          </header>
+          <main>
+            <div class="page-heading"><div><h1>{e(title)}</h1><p>{e(subtitle)}</p></div></div>
+            {body}
+          </main>
+        </div>
+        <script>document.addEventListener('click',e=>{{if(innerWidth<=760&&!e.target.closest('.sidebar')&&!e.target.closest('.mobile-menu'))document.body.classList.remove('menu-open')}})</script>
       </body>
     </html>
+    """
+
+
+def nav_item(label: str, href: str, icon_name: str, active: bool) -> str:
+    active_class = ' class="active" aria-current="page"' if active else ""
+    return f'<a href="{href}"{active_class}>{icon(icon_name)}<span>{e(label)}</span></a>'
+
+
+def icon(name: str) -> str:
+    return f'<svg class="icon" aria-hidden="true"><use href="#icon-{name}"></use></svg>'
+
+
+def svg_sprite() -> str:
+    return """
+    <svg width="0" height="0" style="position:absolute"><defs>
+      <symbol id="icon-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+      <symbol id="icon-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+      <symbol id="icon-user" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></symbol>
+      <symbol id="icon-bag" viewBox="0 0 24 24"><path d="M6 8h12l1 13H5L6 8Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></symbol>
+      <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
+      <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 3-4"/></symbol>
+      <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1v-9Z"/></symbol>
+      <symbol id="icon-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13Z"/><path d="M4 19.5V6.5"/></symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M8 17h8"/></symbol>
+    </defs></svg>
     """
 
 
@@ -703,7 +808,7 @@ def user_row(user: BotUser) -> str:
     return f"""
     <tr>
       <td><a href="/users/{user.id}">{user.id}</a></td>
-      <td>{e(user.platform)}</td>
+      <td>{platform_badge(user.platform)}</td>
       <td>{e(user.platform_user_id)}</td>
       <td>{e(user.username)}</td>
       <td>{e(user.full_name)}</td>
@@ -718,7 +823,7 @@ def client_row(user: BotUser) -> str:
     return f"""
     <tr>
       <td><a href="/users/{user.id}">{user.id}</a></td>
-      <td>{e(user.status)}</td>
+      <td>{status_badge(user.status)}</td>
       <td>{e(user.referral)}</td>
       <td>{e(user.comment)}</td>
       <td>{e(user.full_name)}</td>
@@ -726,7 +831,7 @@ def client_row(user: BotUser) -> str:
       <td>{e(user.email)}</td>
       <td>{format_dt(user.first_seen_at)}</td>
       <td>{e(user.username)}</td>
-      <td>{e(user.platform)}</td>
+      <td>{platform_badge(user.platform)}</td>
     </tr>
     """
 
@@ -744,7 +849,7 @@ def broadcast_row(broadcast: BotBroadcast) -> str:
       <td>{broadcast.id}</td>
       <td>{e(broadcast.name)}</td>
       <td>{format_dt(broadcast.sent_at)}</td>
-      <td>{e(broadcast.status)}</td>
+      <td>{status_badge(broadcast.status)}</td>
       <td>{format_dt(broadcast.created_at)}</td>
       <td>{broadcast.success_count}/{broadcast.total_recipients}</td>
       <td>{broadcast_media_summary(broadcast)}{e(broadcast.last_error)}</td>
@@ -990,6 +1095,16 @@ def broadcast_media_summary(broadcast: BotBroadcast) -> str:
 
 def client_label(user: BotUser) -> str:
     return user.username or user.full_name or user.phone or user.email or user.platform_user_id
+
+
+def status_badge(value: str | None) -> str:
+    normalized = (value or "unknown").lower().replace(" ", "_")
+    return f'<span class="badge {e(normalized)}">{e(value or "—")}</span>'
+
+
+def platform_badge(value: str | None) -> str:
+    label = {"telegram": "Telegram", "max": "MAX"}.get(value or "", value or "—")
+    return f'<span class="badge {e(value)}">{e(label)}</span>'
 
 
 def field(label: str, value: object) -> str:
