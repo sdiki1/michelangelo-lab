@@ -132,6 +132,35 @@ class BotOrder(Base):
     )
 
 
+class ChatMessage(Base):
+    """Сообщение диалога администратора с клиентом.
+
+    Входящие сообщения ботов уже лежат в ``bot_events``; здесь хранится то, что
+    отправил администратор из админки, плюс результат доставки.
+    """
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("bot_users.id", ondelete="CASCADE"), index=True)
+    direction: Mapped[str] = mapped_column(String(16), default="out", index=True)
+    platform: Mapped[str | None] = mapped_column(String(32), index=True)
+    chat_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(String(128))
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bot_orders.id", ondelete="SET NULL"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="sent", index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime_now,
+        index=True,
+    )
+
+
 class IntegrationState(Base):
     __tablename__ = "integration_states"
 

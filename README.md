@@ -75,6 +75,23 @@ The admin panel uses HTTP Basic Auth with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 It shows total users, Telegram/MAX split, total actions, popular actions, recent events,
 user search/filtering, user profiles, raw platform profile data, and interaction history.
 
+### Chat with clients
+
+`/chats` — список диалогов, `/chats/{user_id}` — переписка с клиентом и форма
+отправки сообщения. Входящие реплики берутся из `bot_events`, исходящие
+сохраняются в `chat_messages` вместе с результатом доставки: неотправленное
+сообщение остаётся в ленте с пометкой «не доставлено» и текстом ошибки.
+Отправка идёт тем же ботом, что и рассылки — Telegram `sendMessage` или MAX
+`/messages`. Написать первым можно только клиенту с известным `chat_id`.
+
+### Orders
+
+`/orders/{order_id}` — карточка заказа с кнопкой «Перейти в чат с клиентом»
+(`/chats/{user_id}?order={order_id}`, чат открывается с контекстом заказа, и
+отправленное сообщение сохраняется со ссылкой на него). В таблицах заказов,
+клиентов и пользователей кликабельна вся строка, а не только ссылка в первой
+колонке.
+
 ## ReadyScript orders
 
 Set `READYSCRIPT_WEBHOOK_SECRET` in `.env`.

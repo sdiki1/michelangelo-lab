@@ -14,12 +14,14 @@ from sqlalchemy import Select, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from michelangelo_bots.broadcasting import send_broadcast
+from michelangelo_bots.chat import ChatItem, load_thread, recipient_id, send_admin_message
 from michelangelo_bots.config import Settings, get_settings
 from michelangelo_bots.db import (
     BotBroadcast,
     BotEvent,
     BotOrder,
     BotUser,
+    ChatMessage,
     datetime_now,
     get_session,
     init_db,
@@ -413,6 +415,7 @@ async def orders(
             BotOrder.external_order_id.ilike(pattern)
             | BotOrder.external_order_number.ilike(pattern)
             | BotOrder.telegram_user_id.ilike(pattern)
+            | BotOrder.platform_user_id.ilike(pattern)
             | BotOrder.customer_name.ilike(pattern)
             | BotOrder.customer_phone.ilike(pattern)
             | BotOrder.customer_email.ilike(pattern)
@@ -468,6 +471,222 @@ async def orders(
         </div>
         """,
     )
+
+
+@app.get("/orders/{order_id}", response_class=HTMLResponse)
+async def order_detail(
+    order_id: int,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> str:
+    row = (
+        await session.execute(
+            select(BotOrder, BotUser)
+            .outerjoin(BotUser, BotUser.id == BotOrder.bot_user_id)
+            .where(BotOrder.id == order_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    order, user = row
+
+    if user is not None:
+        chat_button = (
+            f'<a class="button-link" href="/chats/{user.id}?order={order.id}">'
+            f'{icon("chat")} Перейти в чат с клиентом</a>'
+            f'<a class="button-link secondary" href="/users/{user.id}">'
+            f'{icon("user")} Профиль пользователя</a>'
+        )
+    else:
+        chat_button = (
+            '<span class="muted">Заказ не привязан к пользователю бота — '
+            "чат недоступен</span>"
+        )
+
+    return page(
+        f"Заказ №{order.external_order_number or order.external_order_id}",
+        f"""
+        <div class="actions toolbar">{chat_button}</div>
+        <section class="profile">
+          <dl>
+            {field("Номер", order.external_order_number or order.external_order_id)}
+            {field("Статус", order.status)}
+            {field("Сумма", f"{order.total_amount or ''} {order.currency or ''}".strip())}
+            {field("Клиент", order.customer_name)}
+            {field("Телефон", order.customer_phone)}
+            {field("Email", order.customer_email)}
+            {field("Платформа", order.platform)}
+            {field("Messenger user id", order.platform_user_id or order.telegram_user_id)}
+            {field("Источник привязки", BIND_SOURCE_LABELS.get(order.bind_source or "", order.bind_source))}
+            {field("Создан", format_dt(order.created_at))}
+            {field("Обновлён", format_dt(order.updated_at))}
+          </dl>
+        </section>
+        <article>
+          <h2>Состав заказа</h2>
+          <div>{order_items_summary(order) or '<span class="muted">Нет данных о товарах</span>'}</div>
+        </article>
+        """,
+    )
+
+
+@app.get("/chats", response_class=HTMLResponse)
+async def chats(
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: str | None = Query(default=None),
+    platform: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> str:
+    last_outgoing = (
+        select(
+            ChatMessage.user_id.label("user_id"),
+            func.max(ChatMessage.created_at).label("last_outgoing_at"),
+        )
+        .group_by(ChatMessage.user_id)
+        .subquery()
+    )
+    statement = select(BotUser, last_outgoing.c.last_outgoing_at).outerjoin(
+        last_outgoing,
+        last_outgoing.c.user_id == BotUser.id,
+    )
+    if platform:
+        statement = statement.where(BotUser.platform == platform)
+    if q:
+        pattern = f"%{q}%"
+        statement = statement.where(
+            BotUser.username.ilike(pattern)
+            | BotUser.full_name.ilike(pattern)
+            | BotUser.phone.ilike(pattern)
+            | BotUser.email.ilike(pattern)
+            | BotUser.platform_user_id.ilike(pattern)
+            | BotUser.chat_id.ilike(pattern)
+        )
+    result = await session.execute(statement.order_by(desc(BotUser.last_seen_at)).limit(limit))
+    rows = "".join(chat_row(user, last_at) for user, last_at in result.all())
+    return page(
+        "Чаты",
+        f"""
+        <form class="filters" method="get">
+          <input name="q" value="{e(q)}" placeholder="Поиск: username, имя, телефон, id">
+          <select name="platform">
+            <option value="">Все платформы</option>
+            <option value="telegram" {selected(platform, "telegram")}>Telegram</option>
+            <option value="max" {selected(platform, "max")}>MAX</option>
+          </select>
+          <input type="number" name="limit" value="{limit}" min="1" max="1000">
+          <button>Фильтровать</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Клиент</th><th>Платформа</th><th>Последнее сообщение</th>
+                <th>Ответ администратора</th><th>Последний контакт</th>
+              </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+        """,
+    )
+
+
+@app.get("/chats/{user_id}", response_class=HTMLResponse)
+async def chat_detail(
+    user_id: int,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    order: int | None = Query(default=None),
+    sent: str | None = Query(default=None),
+) -> str:
+    user = await find_user(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    thread = await load_thread(session, user)
+    order_context = ""
+    order_field = ""
+    if order is not None:
+        bot_order = (
+            await session.execute(select(BotOrder).where(BotOrder.id == order))
+        ).scalar_one_or_none()
+        if bot_order is not None:
+            number = bot_order.external_order_number or bot_order.external_order_id
+            order_context = (
+                f'<p class="muted">Контекст: заказ '
+                f'<a href="/orders/{bot_order.id}">№{e(number)}</a></p>'
+            )
+            order_field = f'<input type="hidden" name="order_id" value="{bot_order.id}">'
+
+    notice = ""
+    if sent == "ok":
+        notice = '<p class="notice success">Сообщение отправлено</p>'
+    elif sent == "failed":
+        notice = (
+            '<p class="notice danger">Сообщение не доставлено — '
+            "подробности в истории диалога</p>"
+        )
+
+    can_write = bool(recipient_id(user))
+    form = (
+        f"""
+        <form class="chat-form" method="post" action="/chats/{user.id}">
+          {order_field}
+          <textarea name="text" rows="3" required placeholder="Сообщение клиенту"></textarea>
+          <button>Отправить</button>
+        </form>
+        """
+        if can_write
+        else '<p class="muted">У клиента нет chat_id — бот не может написать первым.</p>'
+    )
+
+    return page(
+        f"Чат с {client_label(user)}",
+        f"""
+        <div class="actions toolbar">
+          <a class="button-link secondary" href="/users/{user.id}">{icon("user")} Профиль</a>
+          <a class="button-link secondary" href="/orders?q={e(user.platform_user_id)}">{icon("bag")} Заказы клиента</a>
+        </div>
+        {order_context}
+        {notice}
+        <article class="chat">
+          <div class="chat-thread">{chat_thread_html(thread)}</div>
+          {form}
+        </article>
+        """,
+    )
+
+
+@app.post("/chats/{user_id}", response_class=HTMLResponse)
+async def post_chat_message(
+    user_id: int,
+    admin: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    text: Annotated[str, Form()],
+    order_id: Annotated[int | None, Form()] = None,
+) -> RedirectResponse:
+    user = await find_user(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    message_text = text.strip()
+    if not message_text:
+        raise HTTPException(status_code=422, detail="Message text is required")
+
+    message = await send_admin_message(
+        session,
+        user=user,
+        text=message_text,
+        settings=settings,
+        author=admin,
+        order_id=order_id,
+    )
+    query = f"?sent={'ok' if message.status == 'sent' else 'failed'}"
+    if order_id:
+        query += f"&order={order_id}"
+    return RedirectResponse(f"/chats/{user.id}{query}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/users", response_class=HTMLResponse)
@@ -628,20 +847,24 @@ def page(title: str, body: str) -> str:
         "Статистика": ("Обзор", "Главные показатели и последние действия пользователей"),
         "Список клиентов": ("Клиенты", "Единая база клиентов из Telegram и MAX"),
         "Заказы": ("Заказы", "Заказы и связь с профилями пользователей"),
+        "Чаты": ("Чаты", "Переписка с клиентами в Telegram и MAX"),
         "Рассылка по клиентам": ("Рассылки", "Создание и история сообщений для клиентов"),
         "Путь клиента": ("Путь клиента", "Хронология взаимодействий пользователей с ботами"),
         "Пользователи": ("Пользователи", "Аккаунты, активность и данные пользователей"),
     }
-    section, subtitle = page_meta.get(
-        title,
-        ("Пользователи", "Профиль, заказы и история взаимодействий пользователя"),
-    )
+    default_meta = ("Пользователи", "Профиль, заказы и история взаимодействий пользователя")
+    if title.startswith("Чат с "):
+        default_meta = ("Чаты", "Переписка с клиентом и отправка сообщений из админки")
+    elif title.startswith("Заказ №"):
+        default_meta = ("Заказы", "Карточка заказа, привязка к клиенту и переход в чат")
+    section, subtitle = page_meta.get(title, default_meta)
     navigation = "".join(
         nav_item(label, href, icon_name, section == label)
         for label, href, icon_name in (
             ("Обзор", "/", "grid"),
             ("Клиенты", "/clients", "users"),
             ("Заказы", "/orders", "bag"),
+            ("Чаты", "/chats", "chat"),
             ("Рассылки", "/broadcasts", "mail"),
             ("Путь клиента", "/client-paths", "route"),
             ("Пользователи", "/users", "user"),
@@ -730,6 +953,22 @@ def page(title: str, body: str) -> str:
           pre {{ overflow: auto; background: #f1f3f5; padding: 12px; border-radius: 14px; }}
           code {{ background: #eef2f5; padding: 2px 6px; border-radius: 8px; }}
           .muted {{ color: var(--muted); }}
+          tbody tr[data-href] {{ cursor: pointer; }}
+          .toolbar {{ margin-bottom: 18px; }}
+          .button-link {{ display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 15px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 700; box-shadow: 0 5px 12px rgba(83,100,255,.16); }}
+          .button-link:hover {{ background: #4657ee; }}
+          .button-link.secondary {{ background: var(--accent-soft); color: var(--accent); box-shadow: none; }}
+          .notice {{ margin: 0 0 16px; padding: 11px 14px; border-radius: 10px; font-weight: 650; }}
+          .notice.success {{ color: var(--success); background: #ebfaf3; }}
+          .notice.danger {{ color: var(--danger); background: #fff0f2; }}
+          .chat {{ display: grid; gap: 16px; }}
+          .chat-thread {{ display: grid; gap: 10px; max-height: 60vh; overflow: auto; padding: 4px; }}
+          .bubble {{ max-width: min(620px, 82%); padding: 10px 13px; border-radius: 14px; background: #f4f5fb; }}
+          .bubble.out {{ justify-self: end; background: var(--accent-soft); }}
+          .bubble.failed {{ background: #fff0f2; }}
+          .bubble-text {{ white-space: pre-wrap; word-break: break-word; }}
+          .bubble-meta {{ margin-top: 5px; color: var(--muted); font-size: 12px; }}
+          .chat-form {{ display: grid; gap: 10px; justify-items: start; }}
           .badge {{ display: inline-flex; align-items: center; gap: 6px; min-height: 25px; padding: 3px 9px; border-radius: 999px; background: #f1f2f8; color: #656a80; font-size: 12px; font-weight: 700; }}
           .badge::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }}
           .badge.active, .badge.sent {{ color: var(--success); background: #ebfaf3; }}
@@ -768,7 +1007,15 @@ def page(title: str, body: str) -> str:
             {body}
           </main>
         </div>
-        <script>document.addEventListener('click',e=>{{if(innerWidth<=760&&!e.target.closest('.sidebar')&&!e.target.closest('.mobile-menu'))document.body.classList.remove('menu-open')}})</script>
+        <script>
+          document.addEventListener('click',e=>{{if(innerWidth<=760&&!e.target.closest('.sidebar')&&!e.target.closest('.mobile-menu'))document.body.classList.remove('menu-open')}});
+          document.addEventListener('click',e=>{{
+            const row=e.target.closest('tr[data-href]');
+            if(!row||e.target.closest('a,button,input,select,textarea,form'))return;
+            location.href=row.dataset.href;
+          }});
+          document.querySelectorAll('.chat-thread').forEach(el=>{{el.scrollTop=el.scrollHeight}});
+        </script>
       </body>
     </html>
     """
@@ -790,6 +1037,7 @@ def svg_sprite() -> str:
       <symbol id="icon-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="icon-user" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></symbol>
       <symbol id="icon-bag" viewBox="0 0 24 24"><path d="M6 8h12l1 13H5L6 8Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></symbol>
+      <symbol id="icon-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v10Z"/></symbol>
       <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
       <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 3-4"/></symbol>
       <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1v-9Z"/></symbol>
@@ -806,7 +1054,7 @@ def stat_card(label: str, value: int) -> str:
 
 def user_row(user: BotUser) -> str:
     return f"""
-    <tr>
+    <tr data-href="/users/{user.id}">
       <td><a href="/users/{user.id}">{user.id}</a></td>
       <td>{platform_badge(user.platform)}</td>
       <td>{e(user.platform_user_id)}</td>
@@ -821,7 +1069,7 @@ def user_row(user: BotUser) -> str:
 
 def client_row(user: BotUser) -> str:
     return f"""
-    <tr>
+    <tr data-href="/users/{user.id}">
       <td><a href="/users/{user.id}">{user.id}</a></td>
       <td>{status_badge(user.status)}</td>
       <td>{e(user.referral)}</td>
@@ -860,7 +1108,7 @@ def broadcast_row(broadcast: BotBroadcast) -> str:
 
 def client_path_row(event: BotEvent, user: BotUser) -> str:
     return f"""
-    <tr>
+    <tr data-href="/users/{user.id}">
       <td>{event.id}</td>
       <td>{e(event.event_type)} / {e(event.action)}</td>
       <td><a href="/users/{user.id}">{e(client_label(user))}</a></td>
@@ -870,13 +1118,48 @@ def client_path_row(event: BotEvent, user: BotUser) -> str:
     """
 
 
+def chat_row(user: BotUser, last_outgoing_at: datetime | None) -> str:
+    return f"""
+    <tr data-href="/chats/{user.id}">
+      <td><a href="/chats/{user.id}">{e(client_label(user))}</a></td>
+      <td>{platform_badge(user.platform)}</td>
+      <td>{e(user.last_message_text)}</td>
+      <td>{format_dt(last_outgoing_at)}</td>
+      <td>{format_dt(user.last_seen_at)}</td>
+    </tr>
+    """
+
+
+def chat_thread_html(thread: list[ChatItem]) -> str:
+    if not thread:
+        return '<p class="muted">Сообщений пока нет.</p>'
+
+    bubbles = []
+    for item in thread:
+        outgoing = item.direction == "out"
+        author = (item.author or "администратор") if outgoing else "клиент"
+        classes = "bubble out" if outgoing else "bubble in"
+        meta = f"{e(author)} · {format_dt(item.at)}"
+        title = ""
+        if item.status == "failed":
+            classes += " failed"
+            meta += " · не доставлено"
+            title = f' title="{e(item.error)}"'
+        bubbles.append(
+            f'<div class="{classes}"{title}>'
+            f'<div class="bubble-text">{e(item.text)}</div>'
+            f'<div class="bubble-meta">{meta}</div></div>'
+        )
+    return "".join(bubbles)
+
+
 def order_row(order: BotOrder, user: BotUser | None) -> str:
     user_link = ""
     if user:
         user_link = f'<a href="/users/{user.id}">{e(client_label(user))}</a>'
     return f"""
-    <tr>
-      <td>{e(order.external_order_number)}</td>
+    <tr data-href="/orders/{order.id}">
+      <td><a href="/orders/{order.id}">{e(order.external_order_number)}</a></td>
       <td>{order_items_summary(order)}</td>
       <td>{e(order.total_amount)} {e(order.currency)}</td>
       <td>{e(order.customer_name)}</td>
@@ -908,8 +1191,8 @@ def order_binding(order: BotOrder) -> str:
 
 def user_order_row(order: BotOrder) -> str:
     return f"""
-    <tr>
-      <td>{e(order.external_order_number)}</td>
+    <tr data-href="/orders/{order.id}">
+      <td><a href="/orders/{order.id}">{e(order.external_order_number)}</a></td>
       <td>{order_items_summary(order)}</td>
       <td>{e(order.total_amount)} {e(order.currency)}</td>
       <td>{e(order.status)}</td>
