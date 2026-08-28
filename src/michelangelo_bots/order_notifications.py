@@ -8,6 +8,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from michelangelo_bots.bot_configuration import order_values, render_template, setting
 from michelangelo_bots.config import Settings
 from michelangelo_bots.db import BotOrder, BotUser, datetime_now
 from michelangelo_bots.max_bot import MaxClient
@@ -54,17 +55,23 @@ def admin_targets(settings: Settings) -> list[AdminTarget]:
     return targets
 
 
-def build_order_notification(order: BotOrder, user: BotUser | None) -> str:
-    platform_title = {"telegram": "Telegram", "max": "MAX"}.get(
-        order.platform or "",
-        order.platform or "не определён",
-    )
+def build_order_notification(
+    order: BotOrder,
+    user: BotUser | None,
+    template: str | None = None,
+) -> str:
+    if template is not None:
+        return render_template(template, order_values(order, user))
+    platform_title = {"telegram": "Telegram", "max": "MAX"}.get(order.platform or "")
     order_number = order.external_order_number or order.external_order_id
     lines = [
         "🦋 Оформлен новый заказ",
         f"Заказ: №{order_number}",
-        f"Мессенджер: {platform_title}",
     ]
+    if platform_title:
+        lines.append(f"Мессенджер: {platform_title}")
+    else:
+        lines.append("Источник: сайт / ReadyScript")
 
     if order.total_amount:
         amount = f"{order.total_amount} {order.currency or ''}".strip()
@@ -81,7 +88,8 @@ def build_order_notification(order: BotOrder, user: BotUser | None) -> str:
     username = value_from_user(user, "username")
     if username:
         lines.append(f"Username: @{username.lstrip('@')}")
-    lines.append(f"{platform_title} user ID: {order.platform_user_id or '—'}")
+    if platform_title:
+        lines.append(f"{platform_title} user ID: {order.platform_user_id or '—'}")
 
     items = order_items(order)
     if items:
@@ -137,15 +145,16 @@ async def deliver_pending_order_notifications(
 
     result = await session.execute(
         select(BotOrder)
-        .where(
-            BotOrder.admin_notified_at.is_(None),
-            BotOrder.platform.in_(("telegram", "max")),
-        )
+        # Уведомляем обо всех заказах ReadyScript. Обычные заказы сайта не
+        # имеют platform/platform_user_id, но для менеджеров они не менее
+        # важны, чем заказы из Telegram/MAX miniapp.
+        .where(BotOrder.admin_notified_at.is_(None))
         .order_by(BotOrder.created_at)
         .limit(100)
     )
     orders = list(result.scalars())
     notified = 0
+    template = await setting(session, "admin_order_template")
 
     async with httpx.AsyncClient(
         base_url=str(settings.max_api_base_url).rstrip("/"),
@@ -158,7 +167,7 @@ async def deliver_pending_order_notifications(
         )
         for order in orders:
             user = await session.get(BotUser, order.bot_user_id) if order.bot_user_id else None
-            message = build_order_notification(order, user)
+            message = build_order_notification(order, user, template)
             delivered = set(order.admin_notification_delivered or [])
             order.admin_notification_attempts = (order.admin_notification_attempts or 0) + 1
 
@@ -211,7 +220,7 @@ async def send_notification(
         if not settings.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
         payload: dict[str, object] = {"chat_id": target.recipient_id, "text": message}
-        reply_markup = telegram_contact_reply_markup(order, user)
+        reply_markup = universal_telegram_contact_reply_markup(order, user, settings)
         if reply_markup:
             payload["reply_markup"] = reply_markup
         response = await http_client.post(
@@ -229,10 +238,25 @@ async def send_notification(
 
     if not settings.max_bot_token:
         raise RuntimeError("MAX_BOT_TOKEN is not set")
+    attachments: list[dict[str, object]] = []
+    contact_url = universal_contact_url(order, user, settings)
+    if contact_url:
+        attachments.append(
+            {
+                "type": "inline_keyboard",
+                "payload": {
+                    "buttons": [[{
+                        "type": "link",
+                        "text": "✉️ Связаться с клиентом",
+                        "url": contact_url,
+                    }]]
+                },
+            }
+        )
     await max_client.send_message(
         target.recipient_id,
         message,
-        [],
+        attachments,
         recipient_type=target.recipient_type,
     )
 
@@ -254,6 +278,31 @@ def telegram_contact_reply_markup(
             ]
         ]
     }
+
+
+def universal_telegram_contact_reply_markup(
+    order: BotOrder,
+    user: BotUser | None,
+    settings: Settings,
+) -> dict[str, list[list[dict[str, str]]]] | None:
+    url = universal_contact_url(order, user, settings)
+    if not url:
+        return None
+    return {
+        "inline_keyboard": [[{"text": "✉️ Связаться с клиентом", "url": url}]]
+    }
+
+
+def universal_contact_url(
+    order: BotOrder,
+    user: BotUser | None,
+    settings: Settings,
+) -> str | None:
+    if user is not None and settings.admin_base_url:
+        return f"{settings.admin_base_url.rstrip('/')}/chats/{user.id}?order={order.id}"
+    if settings.admin_base_url:
+        return f"{settings.admin_base_url.rstrip('/')}/orders/{order.id}"
+    return telegram_user_url(order, user)
 
 
 def telegram_user_url(order: BotOrder, user: BotUser | None) -> str | None:

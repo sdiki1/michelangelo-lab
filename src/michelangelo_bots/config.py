@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     )
     admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
     admin_password: str = Field(default="change-me", alias="ADMIN_PASSWORD")
+    admin_base_url: str = Field(default="", alias="ADMIN_BASE_URL")
     order_notification_telegram_chat_ids: str = Field(
         default="",
         alias="ORDER_NOTIFICATION_TELEGRAM_CHAT_IDS",
@@ -63,7 +64,7 @@ class Settings(BaseSettings):
     )
     readyscript_request_timeout: int = Field(default=30, alias="RS_REQUEST_TIMEOUT")
     max_api_base_url: AnyUrl = Field(
-        default="https://platform-api.max.ru",
+        default="https://platform-api2.max.ru",
         alias="MAX_API_BASE_URL",
     )
     max_poll_timeout_seconds: int = Field(default=30, alias="MAX_POLL_TIMEOUT_SECONDS")

@@ -65,6 +65,19 @@ def test_max_keyboard_falls_back_to_link_without_bot_username() -> None:
     }
 
 
+def test_max_configured_link_stays_link_when_web_app_is_available() -> None:
+    keyboard = max_keyboard(
+        [MenuButton("Документы", url="https://example.com/docs", web_app=False)],
+        web_app="michelangelo_bot",
+    )
+
+    assert keyboard[0]["payload"]["buttons"][0][0] == {
+        "type": "link",
+        "text": "Документы",
+        "url": "https://example.com/docs",
+    }
+
+
 def test_max_web_app_uses_profile_username() -> None:
     assert normalize_max_web_app("@michelangelo_bot") == "michelangelo_bot"
     assert max_web_app_from_profile({"username": "michelangelo_bot"}) == "michelangelo_bot"

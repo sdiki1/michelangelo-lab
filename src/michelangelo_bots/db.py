@@ -120,6 +120,11 @@ class BotOrder(Base):
     admin_notification_attempts: Mapped[int] = mapped_column(Integer, default=0)
     admin_notification_error: Mapped[str | None] = mapped_column(Text)
     admin_notification_delivered: Mapped[list[str] | None] = mapped_column(JSONB)
+    customer_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    customer_notification_error: Mapped[str | None] = mapped_column(Text)
+    last_customer_status: Mapped[str | None] = mapped_column(String(128), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=datetime_now,
@@ -166,6 +171,53 @@ class IntegrationState(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class BotSetting(Base):
+    """Editable text template used by both bots and notification workers."""
+
+    __tablename__ = "bot_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime_now, index=True
+    )
+
+
+class BotMenuItem(Base):
+    """A configurable top-level bot button and its optional response page."""
+
+    __tablename__ = "bot_menu_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(32), default="all", index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(32), default="message")
+    body: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, default=100, index=True)
+    active: Mapped[bool] = mapped_column(default=True, index=True)
+
+
+class OrderStatusNotification(Base):
+    """Delivery ledger: one customer notification per observed order status."""
+
+    __tablename__ = "order_status_notifications"
+    __table_args__ = (
+        UniqueConstraint("order_id", "status", name="uq_order_customer_status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("bot_orders.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(128), index=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime_now, index=True
+    )
 
 
 class SiteEvent(Base):
@@ -294,6 +346,18 @@ async def init_db() -> None:
             text(
                 "ALTER TABLE bot_orders "
                 "ADD COLUMN IF NOT EXISTS admin_notification_delivered JSONB"
+            )
+        )
+        await connection.execute(
+            text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS customer_notified_at TIMESTAMPTZ")
+        )
+        await connection.execute(
+            text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS customer_notification_error TEXT")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders "
+                "ADD COLUMN IF NOT EXISTS last_customer_status VARCHAR(128)"
             )
         )
         # Заказы, привязанные до появления platform_user_id, переносим на новую колонку.

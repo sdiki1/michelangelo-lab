@@ -9,16 +9,21 @@ from typing import Any
 
 import httpx
 
+from michelangelo_bots.bot_configuration import (
+    menu_buttons,
+    menu_response,
+    render_start_template,
+    setting,
+)
 from michelangelo_bots.config import Settings, get_settings
 from michelangelo_bots.content import (
     Action,
     MenuButton,
     back_to_main_buttons,
-    main_menu_buttons,
     render_start_text,
     text_for_action,
 )
-from michelangelo_bots.db import init_db
+from michelangelo_bots.db import get_session_factory, init_db
 from michelangelo_bots.tracking import UserSnapshot, track_interaction
 
 logger = logging.getLogger(__name__)
@@ -34,15 +39,18 @@ def max_keyboard(
     rows: list[list[dict[str, Any]]] = []
     for button in buttons:
         if button.url:
-            if web_app:
+            if web_app and button.web_app:
                 rows.append(
                     [{"type": "open_app", "text": button.title, "web_app": web_app}]
                 )
             else:
                 rows.append([{"type": "link", "text": button.title, "url": button.url}])
         elif button.action:
+            action_value = (
+                button.action.value if isinstance(button.action, Action) else button.action
+            )
             rows.append(
-                [{"type": "callback", "text": button.title, "payload": button.action.value}]
+                [{"type": "callback", "text": button.title, "payload": action_value}]
             )
     return [{"type": "inline_keyboard", "payload": {"buttons": rows}}]
 
@@ -58,6 +66,7 @@ class IncomingMessage:
     first_name: str | None = None
     last_name: str | None = None
     raw_user: dict[str, Any] | None = None
+    photo_urls: tuple[str, ...] = ()
 
 
 class MaxClient:
@@ -154,15 +163,42 @@ class MaxBot:
             return
 
         action = action_from_incoming(incoming)
-        await track_max_interaction(incoming, action=action.value, raw_update=update)
-        keyboard = (
-            max_keyboard(
-                main_menu_buttons(str(self._settings.max_miniapp_url)),
-                web_app=self._web_app,
-            )
-            if action is Action.MAIN_MENU
-            else max_keyboard(back_to_main_buttons())
+        action_value = incoming.payload or (
+            "unknown_message" if is_customer_question(incoming) else action.value
         )
+        user = await track_max_interaction(incoming, action=action_value, raw_update=update)
+        if is_admin_channel_message(incoming, self._settings):
+            return
+        if is_customer_question(incoming):
+            from michelangelo_bots.inbound_notifications import notify_admins_about_incoming
+
+            await notify_admins_about_incoming(
+                settings=self._settings,
+                source="max",
+                user=user,
+                message=incoming.text or "📷 Клиент прислал фотографию",
+                photo_urls=list(incoming.photo_urls),
+            )
+            async with get_session_factory()() as session:
+                response_text = await setting(session, "incoming_ack_text")
+            keyboard: list[dict[str, Any]] = []
+        elif incoming.payload and incoming.payload.startswith("config:"):
+            async with get_session_factory()() as session:
+                response_text = await menu_response(session, incoming.payload, "max")
+            response_text = response_text if response_text is not None else "Раздел недоступен"
+            keyboard = max_keyboard(back_to_main_buttons())
+        else:
+            response_text = text_for_incoming(action, incoming)
+            if action is Action.MAIN_MENU:
+                async with get_session_factory()() as session:
+                    buttons = await menu_buttons(
+                        session, "max", str(self._settings.max_miniapp_url)
+                    )
+                    start_text = await setting(session, "start_text")
+                keyboard = max_keyboard(buttons, web_app=self._web_app)
+                response_text = render_start_template(start_text, max_display_name(incoming))
+            else:
+                keyboard = max_keyboard(back_to_main_buttons())
         recipient_id = outgoing_recipient_id(incoming)
         recipient_type = outgoing_recipient_type(incoming)
         if recipient_id is None:
@@ -171,7 +207,7 @@ class MaxBot:
 
         await self._client.send_message(
             recipient_id,
-            text_for_incoming(action, incoming),
+            response_text,
             attachments=keyboard,
             recipient_type=recipient_type,
         )
@@ -227,12 +263,27 @@ class MaxBot:
 def action_from_incoming(incoming: IncomingMessage) -> Action:
     if not incoming.payload:
         return Action.MAIN_MENU
-
     try:
         return Action(incoming.payload)
     except ValueError:
         return Action.MAIN_MENU
 
+
+def is_customer_question(incoming: IncomingMessage) -> bool:
+    if incoming.payload or incoming.callback_id:
+        return False
+    text = (incoming.text or "").strip()
+    return bool(incoming.photo_urls) or bool(text and not text.lower().startswith("/start"))
+
+
+def is_admin_channel_message(incoming: IncomingMessage, settings: Settings) -> bool:
+    if incoming.chat_id is None:
+        return False
+    from michelangelo_bots.order_notifications import parse_recipient_ids
+
+    return str(incoming.chat_id) in parse_recipient_ids(
+        settings.order_notification_max_chat_ids
+    )
 
 def is_get_my_id_command(text: str | None) -> bool:
     if not text:
@@ -305,10 +356,10 @@ async def track_max_interaction(
     *,
     action: str,
     raw_update: dict[str, Any],
-) -> None:
+) -> Any:
     platform_user_id = str(incoming.user_id or incoming.chat_id)
     full_name = " ".join(part for part in [incoming.first_name, incoming.last_name] if part) or None
-    await track_interaction(
+    return await track_interaction(
         user=UserSnapshot(
             platform="max",
             platform_user_id=platform_user_id,
@@ -367,6 +418,7 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
 
     body = message.get("body") if isinstance(message.get("body"), dict) else {}
     text = body.get("text") or message.get("text")
+    attachments = body.get("attachments") or message.get("attachments") or []
     user = extract_user(message) or extract_user(update)
     user_id = extract_user_id(user)
     if chat_id is None and user_id is None:
@@ -379,7 +431,36 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
         first_name=user.get("first_name") or user.get("name") if user else None,
         last_name=user.get("last_name") if user else None,
         raw_user=user,
+        photo_urls=tuple(extract_photo_urls(attachments)),
     )
+
+
+def extract_photo_urls(attachments: Any) -> list[str]:
+    if not isinstance(attachments, list):
+        return []
+    urls: list[str] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict) or attachment.get("type") not in ("image", "photo"):
+            continue
+        payload = attachment.get("payload")
+        if not isinstance(payload, dict):
+            payload = attachment
+        urls.extend(find_http_urls(payload))
+    return list(dict.fromkeys(urls))
+
+
+def find_http_urls(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.startswith(("http://", "https://")) else []
+    if isinstance(value, dict):
+        result: list[str] = []
+        for key, child in value.items():
+            if key in {"url", "src", "source", "photos"}:
+                result.extend(find_http_urls(child))
+        return result
+    if isinstance(value, list):
+        return [url for item in value for url in find_http_urls(item)]
+    return []
 
 
 def extract_chat_id(payload: dict[str, Any]) -> int | str | None:

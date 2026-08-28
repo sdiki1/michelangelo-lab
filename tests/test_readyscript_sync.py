@@ -1,5 +1,13 @@
+from pathlib import Path
+
 from michelangelo_bots.config import Settings
-from michelangelo_bots.readyscript_sync import extract_customer_identity, extract_platform_user_id
+from michelangelo_bots.readyscript_sync import (
+    extract_customer_identity,
+    extract_platform_user_id,
+    load_readyscript_script,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_extract_customer_identity_from_readyscript_order() -> None:
@@ -71,3 +79,18 @@ def test_extract_platform_user_id_from_legacy_module_fields() -> None:
         )
         == "789"
     )
+
+
+def test_order_pagination_uses_actual_collected_count_when_api_caps_page_size() -> None:
+    script = load_readyscript_script(ROOT / "readyscript-orders" / "script.py")
+    client = object.__new__(script.ReadyScriptClient)
+    pages = {
+        1: {"list": [{"id": "1"}, {"id": "2"}], "summary": {"total": 5}},
+        2: {"list": [{"id": "3"}, {"id": "4"}], "summary": {"total": 5}},
+        3: {"list": [{"id": "5"}], "summary": {"total": 5}},
+    }
+    client.get_orders_page = lambda page: pages[page]
+
+    orders = client.get_all_orders()
+
+    assert [order["id"] for order in orders] == ["1", "2", "3", "4", "5"]

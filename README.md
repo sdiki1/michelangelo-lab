@@ -19,12 +19,14 @@ Required variables:
 - `MAX_MINIAPP_URL`
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
+- `ADMIN_BASE_URL` — публичный HTTPS-адрес админки для универсальных кнопок
+  «Ответить клиенту» в Telegram и MAX
 
 Optional:
 
 - `DATABASE_URL` defaults to `postgresql+asyncpg://michelangelo:michelangelo@postgres:5432/michelangelo`
 - `MAX_BOT_USERNAME` — username MAX-бота без `@`; если не указан, загружается через `/me`
-- `MAX_API_BASE_URL` defaults to `https://platform-api.max.ru`
+- `MAX_API_BASE_URL` defaults to `https://platform-api2.max.ru`
 - `MAX_POLL_TIMEOUT_SECONDS` defaults to `30`
 - `ORDER_NOTIFICATION_TELEGRAM_CHAT_IDS` — Telegram chat ID администраторов через запятую
 - `ORDER_NOTIFICATION_MAX_USER_IDS` — MAX user ID администраторов через запятую
@@ -74,6 +76,24 @@ http://localhost:8000
 The admin panel uses HTTP Basic Auth with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 It shows total users, Telegram/MAX split, total actions, popular actions, recent events,
 user search/filtering, user profiles, raw platform profile data, and interaction history.
+
+### Bot settings and customer notifications
+
+`/bot-settings` manages the shared Telegram/MAX menu, response pages, administrator
+order/inbox templates, customer order confirmations, CDEK status messages and manager links.
+The ReadyScript synchronization worker sends a confirmation for each new linked order and
+then sends one customer notification for every newly observed delivery status. Existing orders
+are baselined during the first run, so deploying this version does not generate an old-order burst.
+
+Website questions can be forwarded into both administrator channels with:
+
+```text
+POST /api/site/messages
+X-ReadyScript-Secret: <READYSCRIPT_WEBHOOK_SECRET>
+```
+
+The JSON body accepts `client_id`, `text`, `photo_urls`, customer contact fields and an optional
+`reply_url`. The latter is used by the administrator-channel reply button for website clients.
 
 ### Chat with clients
 

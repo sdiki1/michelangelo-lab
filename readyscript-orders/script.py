@@ -291,7 +291,7 @@ class ReadyScriptClient:
         orders_by_id: dict[str, dict[str, Any]] = {}
 
         page = 1
-        total = 0
+        total: int | None = None
 
         while True:
             logger.info("Получение страницы заказов №%s", page)
@@ -305,6 +305,7 @@ class ReadyScriptClient:
                     f"response.list не является списком: {orders!r}"
                 )
 
+            count_before_page = len(orders_by_id)
             for order in orders:
                 if not isinstance(order, dict):
                     continue
@@ -315,18 +316,33 @@ class ReadyScriptClient:
                     orders_by_id[order_id] = order
 
             try:
-                total = int(summary.get("total", len(orders_by_id)))
+                reported_total = int(summary.get("total"))
+                total = reported_total if reported_total > 0 else None
             except (TypeError, ValueError, AttributeError):
-                total = len(orders_by_id)
+                total = None
 
             logger.info(
                 "Страница %s: получено %s заказов. Всего по API: %s",
                 page,
                 len(orders),
-                total,
+                total if total is not None else "не указан",
             )
 
-            if not orders or page * PAGE_SIZE >= total:
+            # ReadyScript может ограничить фактический размер страницы ниже
+            # запрошенного PAGE_SIZE. Поэтому page * PAGE_SIZE >= total
+            # преждевременно завершало загрузку: например, при лимите API 20
+            # из 150 заказов после первой страницы считалось, что получено 100.
+            # Ориентируемся на реально собранные уникальные ID.
+            if not orders or (total is not None and len(orders_by_id) >= total):
+                break
+
+            # Защита от API, который игнорирует page и бесконечно возвращает
+            # одну и ту же страницу.
+            if len(orders_by_id) == count_before_page:
+                logger.warning(
+                    "Страница %s не добавила новых заказов; останавливаем пагинацию",
+                    page,
+                )
                 break
 
             page += 1

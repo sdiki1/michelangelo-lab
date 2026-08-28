@@ -13,16 +13,22 @@ from aiogram.types import (
     WebAppInfo,
 )
 
+from michelangelo_bots.bot_configuration import (
+    menu_buttons,
+    menu_response,
+    render_start_template,
+    setting,
+)
 from michelangelo_bots.config import get_settings
 from michelangelo_bots.content import (
     Action,
     MenuButton,
     back_to_main_buttons,
-    main_menu_buttons,
-    render_start_text,
     text_for_action,
 )
-from michelangelo_bots.db import init_db
+from michelangelo_bots.db import get_session_factory, init_db
+from michelangelo_bots.inbound_notifications import notify_admins_about_telegram_message
+from michelangelo_bots.order_notifications import parse_recipient_ids
 from michelangelo_bots.tracking import track_telegram_callback, track_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -33,14 +39,22 @@ def telegram_keyboard(buttons: Sequence[MenuButton]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for button in buttons:
         if button.url:
-            rows.append([telegram_miniapp_button(button.title, button.url)])
+            rows.append(
+                [
+                    telegram_miniapp_button(button.title, button.url)
+                    if button.web_app
+                    else InlineKeyboardButton(text=button.title, url=button.url)
+                ]
+            )
             continue
 
         rows.append(
             [
                 InlineKeyboardButton(
                     text=button.title,
-                    callback_data=button.action.value if button.action else None,
+                    callback_data=(
+                        button.action.value if isinstance(button.action, Action) else button.action
+                    ),
                 )
             ]
         )
@@ -62,9 +76,12 @@ def is_telegram_direct_link(url: str) -> bool:
 async def handle_start(message: Message) -> None:
     settings = get_settings()
     await track_telegram_message(message, action=Action.MAIN_MENU.value)
+    async with get_session_factory()() as session:
+        buttons = await menu_buttons(session, "telegram", str(settings.telegram_miniapp_url))
+        start_text = await setting(session, "start_text")
     await message.answer(
-        render_start_text(telegram_display_name(message)),
-        reply_markup=telegram_keyboard(main_menu_buttons(str(settings.telegram_miniapp_url))),
+        render_start_template(start_text, telegram_display_name(message)),
+        reply_markup=telegram_keyboard(buttons),
     )
 
 
@@ -73,15 +90,17 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
     action = Action(callback.data)
     settings = get_settings()
     await track_telegram_callback(callback, action=action.value)
-    keyboard = (
-        telegram_keyboard(main_menu_buttons(str(settings.telegram_miniapp_url)))
-        if action is Action.MAIN_MENU
-        else telegram_keyboard(back_to_main_buttons())
-    )
+    if action is Action.MAIN_MENU:
+        async with get_session_factory()() as session:
+            buttons = await menu_buttons(session, "telegram", str(settings.telegram_miniapp_url))
+            start_text = await setting(session, "start_text")
+        keyboard = telegram_keyboard(buttons)
+    else:
+        keyboard = telegram_keyboard(back_to_main_buttons())
 
     if callback.message:
         text = (
-            render_start_text(telegram_display_name(callback))
+            render_start_template(start_text, telegram_display_name(callback))
             if action is Action.MAIN_MENU
             else text_for_action(action)
         )
@@ -89,13 +108,30 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("config:"))
+async def handle_configured_menu_callback(callback: CallbackQuery) -> None:
+    action = callback.data or ""
+    await track_telegram_callback(callback, action=action)
+    async with get_session_factory()() as session:
+        body = await menu_response(session, action, "telegram")
+    if body is not None and callback.message:
+        await callback.message.answer(body, reply_markup=telegram_keyboard(back_to_main_buttons()))
+    await callback.answer()
+
+
 @router.message()
 async def handle_unknown_message(message: Message) -> None:
     settings = get_settings()
-    await track_telegram_message(message, action="unknown_message")
+    user = await track_telegram_message(message, action="unknown_message")
+    if str(message.chat.id) in parse_recipient_ids(
+        settings.order_notification_telegram_chat_ids
+    ):
+        return
+    await notify_admins_about_telegram_message(message, user, settings)
+    async with get_session_factory()() as session:
+        ack = await setting(session, "incoming_ack_text")
     await message.answer(
-        render_start_text(telegram_display_name(message)),
-        reply_markup=telegram_keyboard(main_menu_buttons(str(settings.telegram_miniapp_url))),
+        ack,
     )
 
 

@@ -27,3 +27,12 @@ def test_telegram_keyboard_uses_url_for_telegram_direct_link() -> None:
 
     assert keyboard.inline_keyboard[0][0].url == "https://t.me/test_bot/app"
     assert keyboard.inline_keyboard[0][0].web_app is None
+
+
+def test_configured_external_link_is_not_forced_into_web_app() -> None:
+    keyboard = telegram_keyboard(
+        [MenuButton("Документы", url="https://example.com/docs", web_app=False)]
+    )
+
+    assert keyboard.inline_keyboard[0][0].url == "https://example.com/docs"
+    assert keyboard.inline_keyboard[0][0].web_app is None

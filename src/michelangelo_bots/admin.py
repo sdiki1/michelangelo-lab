@@ -6,29 +6,44 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import uvicorn
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from michelangelo_bots.bot_configuration import DEFAULT_SETTINGS, all_settings
 from michelangelo_bots.broadcasting import send_broadcast
 from michelangelo_bots.chat import ChatItem, load_thread, recipient_id, send_admin_message
 from michelangelo_bots.config import Settings, get_settings
 from michelangelo_bots.db import (
     BotBroadcast,
     BotEvent,
+    BotMenuItem,
     BotOrder,
+    BotSetting,
     BotUser,
     ChatMessage,
     datetime_now,
     get_session,
     init_db,
 )
+from michelangelo_bots.inbound_notifications import notify_admins_about_incoming
 from michelangelo_bots.rs_api import router as readyscript_router
 from michelangelo_bots.telegram_webapp import verify_telegram_init_data
-from michelangelo_bots.tracking import find_user
+from michelangelo_bots.tracking import UserSnapshot, find_user, track_interaction
 
 security = HTTPBasic()
 app = FastAPI(title="Michelangelo Bot Admin")
@@ -52,6 +67,16 @@ class ReadyScriptOrderPayload(BaseModel):
     customer_phone: str | None = None
     customer_email: str | None = None
     user: dict[str, Any] | None = None
+
+
+class SiteMessagePayload(BaseModel):
+    client_id: str
+    text: str | None = None
+    photo_urls: list[str] = Field(default_factory=list)
+    customer_name: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    reply_url: str | None = None
 
 
 @app.on_event("startup")
@@ -105,6 +130,44 @@ async def receive_readyscript_order(
         "telegram_user_id": order.telegram_user_id,
         "bot_user_id": order.bot_user_id,
     }
+
+
+@app.post("/api/site/messages")
+async def receive_site_message(
+    payload: SiteMessagePayload,
+    _: Annotated[None, Depends(require_readyscript_secret)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    if not (payload.text or payload.photo_urls):
+        raise HTTPException(status_code=422, detail="text or photo_urls is required")
+    user = await track_interaction(
+        user=UserSnapshot(
+            platform="site",
+            platform_user_id=payload.client_id,
+            chat_id=None,
+            full_name=payload.customer_name,
+            raw_profile={"reply_url": payload.reply_url} if payload.reply_url else None,
+        ),
+        action="site_message",
+        event_type="message",
+        message_text=payload.text,
+        raw_update=payload.model_dump(),
+    )
+    if user is None:
+        raise HTTPException(status_code=500, detail="Could not persist site message")
+    user.phone = payload.phone or user.phone
+    user.email = payload.email or user.email
+    await session.merge(user)
+    await session.commit()
+    await notify_admins_about_incoming(
+        settings=settings,
+        source="site",
+        user=user,
+        message=payload.text or "📷 Клиент прислал фотографию",
+        photo_urls=payload.photo_urls,
+    )
+    return {"ok": True, "user_id": user.id}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -298,6 +361,134 @@ async def broadcasts(
         </div>
         """,
     )
+
+
+@app.get("/bot-settings", response_class=HTMLResponse)
+async def bot_settings_page(
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> str:
+    values = await all_settings(session)
+    menu = list(
+        (
+            await session.execute(
+                select(BotMenuItem).order_by(BotMenuItem.position, BotMenuItem.id)
+            )
+        ).scalars()
+    )
+    template_fields = "".join(
+        f"<label>{e(label)}<textarea name=\"{e(key)}\" rows=\"{rows}\">"
+        f"{e(values[key])}</textarea></label>"
+        for key, label, rows in (
+            ("start_text", "Приветствие и главное меню", 14),
+            ("admin_order_template", "Уведомление администраторам о заказе", 10),
+            ("admin_incoming_template", "Входящее сообщение клиента", 9),
+            ("customer_order_template", "Подтверждение заказа клиенту", 8),
+            ("customer_status_template", "Изменение статуса СДЭК", 7),
+            ("incoming_ack_text", "Ответ клиенту после обращения", 4),
+            ("telegram_manager_url", "Ссылка на менеджера в Telegram", 2),
+            ("max_manager_url", "Ссылка на менеджера в MAX", 2),
+        )
+    )
+    menu_rows = "".join(menu_item_editor(item) for item in menu)
+    return page(
+        "Настройки ботов",
+        f"""
+        <article>
+          <h2>Шаблоны сообщений</h2>
+          <p class="muted">Доступные переменные: {{order_number}}, {{source}}, {{status}},
+          {{status_title}}, {{amount}}, {{customer_name}}, {{customer_phone}},
+          {{customer_email}}, {{username}}, {{platform_user_id}}, {{items}}, {{message}}.</p>
+          <form class="settings-form" method="post" action="/bot-settings/templates">
+            {template_fields}
+            <button>Сохранить шаблоны</button>
+          </form>
+        </article>
+        <article>
+          <h2>Добавить кнопку</h2>
+          <form class="menu-editor" method="post" action="/bot-settings/menu">
+            {menu_editor_fields()}
+            <button>Добавить</button>
+          </form>
+        </article>
+        <section class="menu-list">{menu_rows or '<p class="muted">Используется стандартное меню. Добавьте первую кнопку, чтобы включить настраиваемое меню.</p>'}</section>
+        """,
+    )
+
+
+@app.post("/bot-settings/templates")
+async def save_bot_templates(
+    request: Request,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RedirectResponse:
+    form = await request.form()
+    for key in DEFAULT_SETTINGS:
+        if key not in form:
+            continue
+        value = str(form[key]).strip()
+        row = await session.get(BotSetting, key)
+        if row is None:
+            session.add(BotSetting(key=key, value=value))
+        else:
+            row.value = value
+            row.updated_at = datetime_now()
+    await session.commit()
+    return RedirectResponse("/bot-settings", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/bot-settings/menu")
+async def create_menu_item(
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    title: Annotated[str, Form()],
+    platform: Annotated[str, Form()] = "all",
+    kind: Annotated[str, Form()] = "message",
+    body: Annotated[str, Form()] = "",
+    url: Annotated[str, Form()] = "",
+    position: Annotated[int, Form()] = 100,
+) -> RedirectResponse:
+    validate_menu_item(platform, kind, title, url)
+    session.add(
+        BotMenuItem(
+            title=title.strip(), platform=platform, kind=kind, body=body.strip() or None,
+            url=url.strip() or None, position=position, active=True,
+        )
+    )
+    await session.commit()
+    return RedirectResponse("/bot-settings", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/bot-settings/menu/{item_id}")
+async def update_menu_item(
+    item_id: int,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    title: Annotated[str, Form()],
+    platform: Annotated[str, Form()] = "all",
+    kind: Annotated[str, Form()] = "message",
+    body: Annotated[str, Form()] = "",
+    url: Annotated[str, Form()] = "",
+    position: Annotated[int, Form()] = 100,
+    active: Annotated[str, Form()] = "",
+    mode: Annotated[str, Form()] = "save",
+) -> RedirectResponse:
+    item = await session.get(BotMenuItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+    if mode == "delete":
+        await session.delete(item)
+    else:
+        validate_menu_item(platform, kind, title, url)
+        item.title = title.strip()
+        item.platform = platform
+        item.kind = kind
+        item.body = body.strip() or None
+        item.url = url.strip() or None
+        item.position = position
+        item.active = active == "on"
+    await session.commit()
+    return RedirectResponse("/bot-settings", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/broadcasts", response_class=HTMLResponse)
@@ -851,6 +1042,7 @@ def page(title: str, body: str) -> str:
         "Рассылка по клиентам": ("Рассылки", "Создание и история сообщений для клиентов"),
         "Путь клиента": ("Путь клиента", "Хронология взаимодействий пользователей с ботами"),
         "Пользователи": ("Пользователи", "Аккаунты, активность и данные пользователей"),
+        "Настройки ботов": ("Настройки", "Тексты, уведомления и меню Telegram/MAX"),
     }
     default_meta = ("Пользователи", "Профиль, заказы и история взаимодействий пользователя")
     if title.startswith("Чат с "):
@@ -868,6 +1060,7 @@ def page(title: str, body: str) -> str:
             ("Рассылки", "/broadcasts", "mail"),
             ("Путь клиента", "/client-paths", "route"),
             ("Пользователи", "/users", "user"),
+            ("Настройки", "/bot-settings", "settings"),
         )
     )
     return f"""
@@ -942,6 +1135,10 @@ def page(title: str, body: str) -> str:
           label {{ display: grid; gap: 7px; color: #5d6279; font-weight: 700; }}
           label input, label select, label textarea {{ font-weight: 400; }}
           .broadcast-form {{ display: grid; gap: 14px; max-width: 860px; }}
+          .settings-form, .menu-list {{ display: grid; gap: 16px; }}
+          .menu-editor {{ display: grid; grid-template-columns: 120px 130px minmax(180px,1fr) 90px; gap: 12px; align-items: end; }}
+          .menu-editor .wide {{ grid-column: 1 / -1; }}
+          .menu-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }}
           .form-grid {{ display: grid; grid-template-columns: 220px 1fr; gap: 12px; }}
           .checkbox {{ display: flex; align-items: center; gap: 8px; }}
           .checkbox input {{ min-height: auto; }}
@@ -981,7 +1178,7 @@ def page(title: str, body: str) -> str:
             body.menu-open .sidebar {{ transform: translateX(0); }}
             .workspace {{ margin-left: 0; }} .mobile-menu {{ display: grid; }} .breadcrumbs .home, .breadcrumbs .separator:first-of-type {{ display: none; }}
             .topbar {{ padding: 0 16px; }} main {{ padding: 22px 16px 45px; }} .stats {{ grid-template-columns: 1fr; }}
-            .page-heading {{ align-items: flex-start; }} h1 {{ font-size: 24px; }} .credit {{ display: none; }} .form-grid, dl {{ grid-template-columns: 1fr; }}
+            .page-heading {{ align-items: flex-start; }} h1 {{ font-size: 24px; }} .credit {{ display: none; }} .form-grid, .menu-editor, dl {{ grid-template-columns: 1fr; }}
             dt {{ padding-bottom: 2px; border-bottom: 0; }} dd {{ padding-top: 2px; }}
           }}
         </style>
@@ -1044,12 +1241,62 @@ def svg_sprite() -> str:
       <symbol id="icon-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13Z"/><path d="M4 19.5V6.5"/></symbol>
       <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
       <symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M8 17h8"/></symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
     </defs></svg>
     """
 
 
 def stat_card(label: str, value: int) -> str:
     return f'<div class="stat"><span>{e(label)}</span><strong>{value}</strong></div>'
+
+
+def menu_editor_fields(item: BotMenuItem | None = None) -> str:
+    platform = item.platform if item else "all"
+    kind = item.kind if item else "message"
+    title = item.title if item else ""
+    body = item.body if item else ""
+    url = item.url if item else ""
+    position = item.position if item else 100
+    active = "checked" if item is None or item.active else ""
+    return f"""
+      <label>Платформа<select name="platform">
+        <option value="all" {selected(platform, 'all')}>Оба бота</option>
+        <option value="telegram" {selected(platform, 'telegram')}>Telegram</option>
+        <option value="max" {selected(platform, 'max')}>MAX</option>
+      </select></label>
+      <label>Тип<select name="kind">
+        <option value="message" {selected(kind, 'message')}>Сообщение</option>
+        <option value="link" {selected(kind, 'link')}>Ссылка</option>
+      </select></label>
+      <label>Название<input name="title" value="{e(title)}" required maxlength="255"></label>
+      <label>Порядок<input name="position" type="number" value="{position}"></label>
+      <label class="wide">Текст после нажатия<textarea name="body" rows="5">{e(body)}</textarea></label>
+      <label class="wide">URL для кнопки-ссылки<input name="url" value="{e(url)}" placeholder="https://..."></label>
+      <label class="checkbox"><input type="checkbox" name="active" {active}><span>Включена</span></label>
+    """
+
+
+def menu_item_editor(item: BotMenuItem) -> str:
+    return f"""
+      <form class="menu-editor menu-card" method="post" action="/bot-settings/menu/{item.id}">
+        {menu_editor_fields(item)}
+        <div class="actions wide">
+          <button name="mode" value="save">Сохранить</button>
+          <button class="secondary" name="mode" value="delete" formnovalidate>Удалить</button>
+        </div>
+      </form>
+    """
+
+
+def validate_menu_item(platform: str, kind: str, title: str, url: str) -> None:
+    if platform not in {"all", "telegram", "max"}:
+        raise HTTPException(status_code=422, detail="Invalid platform")
+    if kind not in {"message", "link"}:
+        raise HTTPException(status_code=422, detail="Invalid menu item kind")
+    if not title.strip():
+        raise HTTPException(status_code=422, detail="Title is required")
+    if kind == "link" and not url.strip().startswith(("https://", "http://")):
+        raise HTTPException(status_code=422, detail="Link URL must start with http:// or https://")
 
 
 def user_row(user: BotUser) -> str:

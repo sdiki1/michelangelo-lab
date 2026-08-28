@@ -13,8 +13,9 @@ class Action(StrEnum):
 @dataclass(frozen=True)
 class MenuButton:
     title: str
-    action: Action | None = None
+    action: Action | str | None = None
     url: str | None = None
+    web_app: bool = True
 
 
 START_TEXT = """Привет, {{name}}!

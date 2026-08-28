@@ -1,8 +1,14 @@
+from datetime import UTC, datetime
+
+import pytest
+
+from michelangelo_bots import order_notifications
 from michelangelo_bots.config import Settings
 from michelangelo_bots.db import BotOrder, BotUser
 from michelangelo_bots.order_notifications import (
     admin_targets,
     build_order_notification,
+    deliver_pending_order_notifications,
     parse_recipient_ids,
     telegram_contact_reply_markup,
     telegram_user_url,
@@ -58,6 +64,63 @@ def test_build_order_notification_contains_platform_and_contact() -> None:
     assert "Username: @ivan" in message
     assert "MAX user ID: 456" in message
     assert "• Набор × 2" in message
+
+
+def test_build_order_notification_marks_regular_website_order() -> None:
+    order = BotOrder(
+        external_source="readyscript",
+        external_order_id="56",
+        external_order_number="WEB-56",
+        platform=None,
+        customer_name="Обычный покупатель",
+    )
+
+    message = build_order_notification(order, None)
+
+    assert "Источник: сайт / ReadyScript" in message
+    assert "Мессенджер:" not in message
+    assert "user ID:" not in message
+
+
+@pytest.mark.asyncio
+async def test_regular_website_order_is_delivered_to_managers(monkeypatch) -> None:
+    order = BotOrder(
+        external_source="readyscript",
+        external_order_id="57",
+        external_order_number="WEB-57",
+        platform=None,
+        created_at=datetime(2026, 8, 26, tzinfo=UTC),
+    )
+    delivered_orders = []
+
+    class Result:
+        def scalars(self):
+            return [order]
+
+    class Session:
+        async def execute(self, _statement):
+            return Result()
+
+        async def commit(self):
+            return None
+
+        async def get(self, _model, _identity):
+            return None
+
+    async def fake_send_notification(*_args, **kwargs):
+        delivered_orders.append(kwargs["order"])
+
+    monkeypatch.setattr(order_notifications, "send_notification", fake_send_notification)
+    settings = Settings(
+        ORDER_NOTIFICATION_TELEGRAM_CHAT_IDS="100",
+        _env_file=None,
+    )
+
+    notified = await deliver_pending_order_notifications(Session(), settings)
+
+    assert notified == 1
+    assert delivered_orders == [order]
+    assert order.admin_notified_at is not None
 
 
 def test_telegram_contact_button_prefers_username() -> None:

@@ -34,7 +34,7 @@ async def track_interaction(
     message_text: str | None = None,
     callback_payload: str | None = None,
     raw_update: dict[str, Any] | None = None,
-) -> None:
+) -> BotUser | None:
     try:
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -57,8 +57,10 @@ async def track_interaction(
                 )
             )
             await session.commit()
+            return db_user
     except Exception:
         logger.exception("Failed to track bot interaction")
+        return None
 
 
 async def upsert_user(
@@ -140,11 +142,11 @@ def telegram_user_snapshot(message_or_callback: Message | CallbackQuery) -> User
     )
 
 
-async def track_telegram_message(message: Message, *, action: str) -> None:
+async def track_telegram_message(message: Message, *, action: str) -> BotUser | None:
     user = telegram_user_snapshot(message)
     if user is None:
-        return
-    await track_interaction(
+        return None
+    return await track_interaction(
         user=user,
         action=action,
         event_type="message",
@@ -153,11 +155,11 @@ async def track_telegram_message(message: Message, *, action: str) -> None:
     )
 
 
-async def track_telegram_callback(callback: CallbackQuery, *, action: str) -> None:
+async def track_telegram_callback(callback: CallbackQuery, *, action: str) -> BotUser | None:
     user = telegram_user_snapshot(callback)
     if user is None:
-        return
-    await track_interaction(
+        return None
+    return await track_interaction(
         user=user,
         action=action,
         event_type="callback",

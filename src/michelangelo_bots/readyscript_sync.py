@@ -13,6 +13,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from michelangelo_bots.config import Settings, get_settings
+from michelangelo_bots.customer_notifications import (
+    deliver_customer_notifications,
+    extract_delivery_status,
+)
 from michelangelo_bots.db import (
     BotOrder,
     BotUser,
@@ -26,6 +30,7 @@ from michelangelo_bots.telegram_webapp import verify_telegram_init_data
 
 logger = logging.getLogger(__name__)
 ORDER_NOTIFICATIONS_STATE_KEY = "readyscript_order_notifications_initialized"
+CUSTOMER_NOTIFICATIONS_STATE_KEY = "customer_order_notifications_initialized"
 
 
 class ReadyScriptSyncError(RuntimeError):
@@ -41,6 +46,7 @@ async def sync_readyscript_orders(
     imported = 0
     linked = 0
     baseline = await prepare_notification_baseline(session)
+    customer_baseline = await prepare_customer_notification_baseline(session)
 
     for raw_order in orders:
         order, created = await upsert_order(session, settings, raw_order)
@@ -48,13 +54,22 @@ async def sync_readyscript_orders(
             # Первый запуск после добавления уведомлений — это начальная
             # синхронизация, а не пачка новых заказов для администратора.
             order.admin_notified_at = datetime_now()
+        if customer_baseline and created:
+            order.customer_notified_at = datetime_now()
+            order.last_customer_status = order.status
         imported += 1
         if order.bot_user_id is not None:
             linked += 1
 
     await session.commit()
     notified = await deliver_pending_order_notifications(session, settings)
-    return {"imported": imported, "linked": linked, "notified": notified}
+    customer_notified = await deliver_customer_notifications(session, settings)
+    return {
+        "imported": imported,
+        "linked": linked,
+        "notified": notified,
+        "customer_notified": customer_notified,
+    }
 
 
 async def prepare_notification_baseline(session: AsyncSession) -> bool:
@@ -69,6 +84,23 @@ async def prepare_notification_baseline(session: AsyncSession) -> bool:
         .values(admin_notified_at=datetime_now())
     )
     session.add(IntegrationState(key=ORDER_NOTIFICATIONS_STATE_KEY, value="1"))
+    await session.flush()
+    return True
+
+
+async def prepare_customer_notification_baseline(session: AsyncSession) -> bool:
+    state = await session.get(IntegrationState, CUSTOMER_NOTIFICATIONS_STATE_KEY)
+    if state is not None:
+        return False
+    await session.execute(
+        update(BotOrder)
+        .where(BotOrder.customer_notified_at.is_(None))
+        .values(
+            customer_notified_at=datetime_now(),
+            last_customer_status=BotOrder.status,
+        )
+    )
+    session.add(IntegrationState(key=CUSTOMER_NOTIFICATIONS_STATE_KEY, value="1"))
     await session.flush()
     return True
 
@@ -212,7 +244,7 @@ async def upsert_order(
     )
     order.bind_source = first_value(raw_order.get("ml_bind_source"), "readyscript_polling")
     order.bot_user_id = bot_user.id if bot_user else None
-    order.status = first_value(raw_order.get("status"), raw_order.get("status_title"))
+    order.status = extract_delivery_status(raw_order)
     order.total_amount = first_value(
         raw_order.get("totalcost"),
         raw_order.get("total"),
