@@ -31,6 +31,15 @@ Optional:
 - `ORDER_NOTIFICATION_TELEGRAM_CHAT_IDS` — Telegram chat ID администраторов через запятую
 - `ORDER_NOTIFICATION_MAX_USER_IDS` — MAX user ID администраторов через запятую
 - `ORDER_NOTIFICATION_MAX_CHAT_IDS` — MAX chat ID административных групп через запятую
+- `NOTIFICATION_ALERT_AFTER_MINUTES` — возраст массового сбоя до тревоги (по умолчанию 180)
+- `NOTIFICATION_ALERT_MIN_FAILURES` — сколько одновременных ошибок считать массовым сбоем (3)
+- `NOTIFICATION_ALERT_ISOLATED_AFTER_MINUTES` — тревога об одном зависшем сообщении (1440)
+- `NOTIFICATION_ALERT_REMINDER_MINUTES` — интервал повторного сигнала о продолжающемся сбое (360)
+
+Docker-образ устанавливает официальный корневой сертификат Минцифры из
+`certs/russian_trusted_root_ca.crt`: он требуется домену `platform-api2.max.ru`.
+Проверка TLS не отключается. При плановой замене сертификата сверяйте SHA-256
+отпечаток файла с публикацией Госуслуг перед обновлением образа.
 
 `MINIAPP_URL` remains a fallback. If `TELEGRAM_MINIAPP_URL` or `MAX_MINIAPP_URL`
 is set, that platform uses its own miniapp URL.
@@ -85,6 +94,14 @@ The ReadyScript synchronization worker sends a confirmation for each new linked 
 then sends one customer notification for every newly observed delivery status. Existing orders
 are baselined during the first run, so deploying this version does not generate an old-order burst.
 
+Неуспешная клиентская доставка повторяется в каждом цикле синхронизации и учитывается в
+отдельном журнале попыток. Самопроверка отправляет администраторам один агрегированный сигнал,
+если минимум три сообщения не доставляются три часа, либо одно сообщение зависло на сутки.
+Продолжающийся сбой напоминается не чаще раза в шесть часов; после очистки очереди приходит
+одно сообщение о восстановлении. Тем же способом контролируется длительный сбой получения
+заказов и статусов ReadyScript/СДЭК. Пороги задаются переменными `NOTIFICATION_ALERT_*`, а тексты
+сигнала и восстановления редактируются в `/bot-settings`.
+
 Website questions can be forwarded into both administrator channels with:
 
 ```text
@@ -103,6 +120,18 @@ The JSON body accepts `client_id`, `text`, `photo_urls`, customer contact fields
 сообщение остаётся в ленте с пометкой «не доставлено» и текстом ошибки.
 Отправка идёт тем же ботом, что и рассылки — Telegram `sendMessage` или MAX
 `/messages`. Написать первым можно только клиенту с известным `chat_id`.
+
+В ленте показываются фото и видео с обеих сторон. Входящие медиа Telegram
+отдаёт прокси-эндпоинт админки `/media/telegram/{file_id}` (прямая ссылка
+Telegram содержит токен бота, наружу она не уходит), входящие медиа MAX берутся
+по ссылкам из апдейта. Форма ответа принимает несколько файлов
+(`image/*`, `video/*`): текст можно оставить пустым, если приложено вложение.
+Telegram получает `sendPhoto`/`sendVideo`, а несколько файлов — `sendMediaGroup`
+(текст длиннее 1024 символов уходит отдельным сообщением, потому что не влезает
+в подпись). Для MAX файл сначала загружается через `/uploads`, а отправка
+повторяется, пока MAX дообрабатывает видео (`attachment.not.ready`).
+Отправленные файлы лежат в `UPLOADS_DIR/chats` и показываются в ленте через
+`/media/chat/{message_id}/{index}`.
 
 ### Orders
 

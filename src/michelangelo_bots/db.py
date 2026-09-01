@@ -124,6 +124,13 @@ class BotOrder(Base):
         DateTime(timezone=True), index=True
     )
     customer_notification_error: Mapped[str | None] = mapped_column(Text)
+    customer_notification_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    customer_notification_first_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    customer_notification_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
     last_customer_status: Mapped[str | None] = mapped_column(String(128), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -152,6 +159,9 @@ class ChatMessage(Base):
     platform: Mapped[str | None] = mapped_column(String(32), index=True)
     chat_id: Mapped[str | None] = mapped_column(String(128), index=True)
     text: Mapped[str] = mapped_column(Text)
+    # Вложения администратора: [{filename, path, content_type, kind}] — файлы лежат
+    # в uploads_dir админки, поэтому в ленте они отдаются через /media/chat/...
+    attachments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     author: Mapped[str | None] = mapped_column(String(128))
     order_id: Mapped[int | None] = mapped_column(
         ForeignKey("bot_orders.id", ondelete="SET NULL"),
@@ -215,6 +225,9 @@ class OrderStatusNotification(Base):
     status: Mapped[str] = mapped_column(String(128), index=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     error: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime_now, index=True
     )
@@ -319,6 +332,12 @@ async def init_db() -> None:
             text("ALTER TABLE bot_broadcasts ADD COLUMN IF NOT EXISTS media_files JSONB")
         )
         await connection.execute(
+            text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS attachments JSONB")
+        )
+        await connection.execute(
+            text("ALTER TABLE chat_messages ALTER COLUMN text DROP NOT NULL")
+        )
+        await connection.execute(
             text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS platform_user_id VARCHAR(128)")
         )
         await connection.execute(
@@ -356,8 +375,44 @@ async def init_db() -> None:
         )
         await connection.execute(
             text(
+                "ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS "
+                "customer_notification_attempts INTEGER DEFAULT 0"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS "
+                "customer_notification_first_failed_at TIMESTAMPTZ"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS "
+                "customer_notification_last_attempt_at TIMESTAMPTZ"
+            )
+        )
+        await connection.execute(
+            text(
                 "ALTER TABLE bot_orders "
                 "ADD COLUMN IF NOT EXISTS last_customer_status VARCHAR(128)"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE order_status_notifications ADD COLUMN IF NOT EXISTS "
+                "attempt_count INTEGER DEFAULT 0"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE order_status_notifications ADD COLUMN IF NOT EXISTS "
+                "first_failed_at TIMESTAMPTZ"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE order_status_notifications ADD COLUMN IF NOT EXISTS "
+                "last_attempt_at TIMESTAMPTZ"
             )
         )
         # Заказы, привязанные до появления platform_user_id, переносим на новую колонку.

@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from michelangelo_bots import max_bot
 from michelangelo_bots.config import Settings
 from michelangelo_bots.content import ABOUT_TEXT, Action, MenuButton
 from michelangelo_bots.max_bot import (
@@ -324,3 +325,31 @@ async def test_max_client_loads_profile_with_authorization_header() -> None:
     assert captured_request.headers["Authorization"] == "token"
     assert captured_request.url.path == "/me"
     assert "access_token" not in str(captured_request.url)
+
+
+def test_extract_media_splits_photos_and_videos() -> None:
+    media = max_bot.extract_media(
+        [
+            {"type": "image", "payload": {"url": "https://cdn.max/p.jpg"}},
+            {"type": "video", "payload": {"url": "https://cdn.max/v.mp4"}},
+            {"type": "inline_keyboard", "payload": {"buttons": []}},
+        ]
+    )
+
+    assert media == [
+        {"kind": "photo", "url": "https://cdn.max/p.jpg"},
+        {"kind": "video", "url": "https://cdn.max/v.mp4"},
+    ]
+
+
+def test_max_attachment_from_upload_supports_photos_and_tokens() -> None:
+    assert max_bot.max_attachment_from_upload("image", {"photos": {"p": {"token": "t"}}}) == {
+        "type": "image",
+        "payload": {"photos": {"p": {"token": "t"}}},
+    }
+    assert max_bot.max_attachment_from_upload("video", {"token": "vt"}) == {
+        "type": "video",
+        "payload": {"token": "vt"},
+    }
+    with pytest.raises(RuntimeError, match="no token"):
+        max_bot.max_attachment_from_upload("image", {})

@@ -43,6 +43,29 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "incoming_ack_text": (
         "Спасибо! Сообщение передано менеджеру. Он ответит вам в этом чате."
     ),
+    "notification_failure_template": (
+        "⚠️ Системная проблема с уведомлениями клиентов\n\n"
+        "Не доставлено: {failed_count}\n"
+        "Telegram: {telegram_count}, MAX: {max_count}\n"
+        "Самая старая ошибка: {oldest_minutes} мин.\n"
+        "Заказы: {orders}\n\n"
+        "Система продолжает повторные попытки автоматически.\n"
+        "Последняя ошибка: {last_error}"
+    ),
+    "notification_recovery_template": (
+        "✅ Доставка уведомлений восстановлена\n\n"
+        "Очередь проблемных сообщений очищена. Клиентские уведомления снова отправляются."
+    ),
+    "sync_failure_template": (
+        "⚠️ Синхронизация ReadyScript/СДЭК не работает\n\n"
+        "Сбой длится {oldest_minutes} мин., неудачных циклов: {failed_count}.\n"
+        "Пока синхронизация не восстановится, новые статусы доставки не поступают.\n"
+        "Последняя ошибка: {last_error}"
+    ),
+    "sync_recovery_template": (
+        "✅ Синхронизация ReadyScript/СДЭК восстановлена\n\n"
+        "Новые заказы и статусы снова обрабатываются."
+    ),
     "telegram_manager_url": "https://t.me/michelangelo_nabor",
     "max_manager_url": "",
 }

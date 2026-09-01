@@ -1,10 +1,13 @@
+import asyncio
 import html
 import secrets
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
+import httpx
 import uvicorn
 from fastapi import (
     Depends,
@@ -18,7 +21,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, desc, func, select
@@ -26,7 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from michelangelo_bots.bot_configuration import DEFAULT_SETTINGS, all_settings
 from michelangelo_bots.broadcasting import send_broadcast
-from michelangelo_bots.chat import ChatItem, load_thread, recipient_id, send_admin_message
+from michelangelo_bots.chat import (
+    ChatAttachment,
+    ChatItem,
+    load_thread,
+    recipient_id,
+    send_admin_message,
+)
 from michelangelo_bots.config import Settings, get_settings
 from michelangelo_bots.db import (
     BotBroadcast,
@@ -36,6 +45,7 @@ from michelangelo_bots.db import (
     BotSetting,
     BotUser,
     ChatMessage,
+    OrderStatusNotification,
     datetime_now,
     get_session,
     init_db,
@@ -386,6 +396,10 @@ async def bot_settings_page(
             ("customer_order_template", "Подтверждение заказа клиенту", 8),
             ("customer_status_template", "Изменение статуса СДЭК", 7),
             ("incoming_ack_text", "Ответ клиенту после обращения", 4),
+            ("notification_failure_template", "Системный сбой доставки уведомлений", 9),
+            ("notification_recovery_template", "Восстановление доставки уведомлений", 4),
+            ("sync_failure_template", "Сбой синхронизации ReadyScript/СДЭК", 7),
+            ("sync_recovery_template", "Восстановление синхронизации ReadyScript/СДЭК", 4),
             ("telegram_manager_url", "Ссылка на менеджера в Telegram", 2),
             ("max_manager_url", "Ссылка на менеджера в MAX", 2),
         )
@@ -680,6 +694,19 @@ async def order_detail(
     if row is None:
         raise HTTPException(status_code=404, detail="Order not found")
     order, user = row
+    status_notifications = list(
+        (
+            await session.execute(
+                select(OrderStatusNotification)
+                .where(OrderStatusNotification.order_id == order.id)
+                .order_by(OrderStatusNotification.created_at)
+            )
+        ).scalars()
+    )
+    status_notification_rows = "".join(
+        order_status_notification_row(notification)
+        for notification in status_notifications
+    )
 
     if user is not None:
         chat_button = (
@@ -709,6 +736,10 @@ async def order_detail(
             {field("Платформа", order.platform)}
             {field("Messenger user id", order.platform_user_id or order.telegram_user_id)}
             {field("Источник привязки", BIND_SOURCE_LABELS.get(order.bind_source or "", order.bind_source))}
+            {field("Подтверждение клиенту", "доставлено" if order.customer_notified_at else "ожидает доставки")}
+            {field("Попыток подтверждения", order.customer_notification_attempts or 0)}
+            {field("Последняя попытка", format_dt(order.customer_notification_last_attempt_at))}
+            {field("Ошибка подтверждения", order.customer_notification_error)}
             {field("Создан", format_dt(order.created_at))}
             {field("Обновлён", format_dt(order.updated_at))}
           </dl>
@@ -716,6 +747,15 @@ async def order_detail(
         <article>
           <h2>Состав заказа</h2>
           <div>{order_items_summary(order) or '<span class="muted">Нет данных о товарах</span>'}</div>
+        </article>
+        <article>
+          <h2>Уведомления о статусах СДЭК</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Статус</th><th>Результат</th><th>Попыток</th><th>Последняя попытка</th><th>Ошибка</th></tr></thead>
+              <tbody>{status_notification_rows or '<tr><td colspan="5" class="muted">Изменений статуса пока не было</td></tr>'}</tbody>
+            </table>
+          </div>
         </article>
         """,
     )
@@ -813,6 +853,8 @@ async def chat_detail(
     notice = ""
     if sent == "ok":
         notice = '<p class="notice success">Сообщение отправлено</p>'
+    elif sent == "empty":
+        notice = '<p class="notice danger">Нужен текст или вложение</p>'
     elif sent == "failed":
         notice = (
             '<p class="notice danger">Сообщение не доставлено — '
@@ -822,9 +864,14 @@ async def chat_detail(
     can_write = bool(recipient_id(user))
     form = (
         f"""
-        <form class="chat-form" method="post" action="/chats/{user.id}">
+        <form class="chat-form" method="post" action="/chats/{user.id}"
+              enctype="multipart/form-data">
           {order_field}
-          <textarea name="text" rows="3" required placeholder="Сообщение клиенту"></textarea>
+          <textarea name="text" rows="3" placeholder="Сообщение клиенту"></textarea>
+          <label class="chat-attach">
+            {icon("image")} Фото или видео
+            <input type="file" name="attachments" multiple accept="image/*,video/*">
+          </label>
           <button>Отправить</button>
         </form>
         """
@@ -855,16 +902,21 @@ async def post_chat_message(
     admin: Annotated[str, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    text: Annotated[str, Form()],
+    text: Annotated[str, Form()] = "",
     order_id: Annotated[int | None, Form()] = None,
+    attachments: Annotated[list[UploadFile] | None, File()] = None,
 ) -> RedirectResponse:
     user = await find_user(session, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
     message_text = text.strip()
-    if not message_text:
-        raise HTTPException(status_code=422, detail="Message text is required")
+    media_files = await save_media_uploads(attachments or [], settings.uploads_dir, "chats")
+    if not message_text and not media_files:
+        query = "?sent=empty" + (f"&order={order_id}" if order_id else "")
+        return RedirectResponse(
+            f"/chats/{user.id}{query}", status_code=status.HTTP_303_SEE_OTHER
+        )
 
     message = await send_admin_message(
         session,
@@ -873,11 +925,95 @@ async def post_chat_message(
         settings=settings,
         author=admin,
         order_id=order_id,
+        attachments=media_files,
     )
     query = f"?sent={'ok' if message.status == 'sent' else 'failed'}"
     if order_id:
         query += f"&order={order_id}"
     return RedirectResponse(f"/chats/{user.id}{query}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/media/chat/{message_id}/{index}")
+async def chat_attachment_file(
+    message_id: int,
+    index: int,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> FileResponse:
+    """Отдаёт вложение исходящего сообщения из uploads_dir по записи в БД.
+
+    Путь берётся только из сохранённой записи, произвольные файлы через этот
+    эндпоинт не читаются.
+    """
+
+    message = await session.get(ChatMessage, message_id)
+    stored = (message.attachments or []) if message else []
+    if not stored or index < 0 or index >= len(stored):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    media_file = stored[index]
+    path = Path(media_file["path"])
+    if not await asyncio.to_thread(path.is_file):
+        raise HTTPException(status_code=404, detail="Attachment file is missing")
+    return FileResponse(
+        path,
+        media_type=media_file.get("content_type") or "application/octet-stream",
+        filename=media_file.get("filename") or path.name,
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/media/telegram/{file_id}")
+async def telegram_attachment_file(
+    file_id: str,
+    _: Annotated[str, Depends(require_admin)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> StreamingResponse:
+    """Проксирует медиа клиента из Telegram: прямая ссылка содержит токен бота."""
+
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN is not set")
+
+    client = httpx.AsyncClient(timeout=60)
+    try:
+        info = await client.get(
+            f"https://api.telegram.org/bot{settings.telegram_bot_token}/getFile",
+            params={"file_id": file_id},
+        )
+        if info.is_error:
+            raise HTTPException(status_code=404, detail="Telegram file is unavailable")
+        file_path = (info.json().get("result") or {}).get("file_path")
+        if not file_path:
+            raise HTTPException(status_code=404, detail="Telegram file is unavailable")
+
+        request = client.build_request(
+            "GET",
+            f"https://api.telegram.org/file/bot{settings.telegram_bot_token}/{file_path}",
+        )
+        upstream = await client.send(request, stream=True)
+        if upstream.is_error:
+            await upstream.aclose()
+            raise HTTPException(status_code=404, detail="Telegram file is unavailable")
+    except HTTPException:
+        await client.aclose()
+        raise
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Telegram file proxy failed: {exc}") from exc
+
+    async def stream() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        stream(),
+        media_type=upstream.headers.get("content-type", "application/octet-stream"),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @app.get("/users", response_class=HTMLResponse)
@@ -1165,7 +1301,13 @@ def page(title: str, body: str) -> str:
           .bubble.failed {{ background: #fff0f2; }}
           .bubble-text {{ white-space: pre-wrap; word-break: break-word; }}
           .bubble-meta {{ margin-top: 5px; color: var(--muted); font-size: 12px; }}
-          .chat-form {{ display: grid; gap: 10px; justify-items: start; }}
+          .bubble-media-list {{ display: grid; gap: 8px; margin-bottom: 8px; }}
+          .bubble-media {{ display: block; max-width: 100%; max-height: 340px; border-radius: 10px; background: #e9ebf3; }}
+          .bubble-file {{ display: inline-block; font-weight: 700; word-break: break-all; }}
+          .chat-form {{ display: grid; gap: 10px; justify-items: start; width: 100%; }}
+          .chat-form textarea {{ width: 100%; }}
+          .chat-attach {{ display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font-weight: 650; }}
+          .chat-attach input {{ font-weight: 400; color: var(--muted); }}
           .badge {{ display: inline-flex; align-items: center; gap: 6px; min-height: 25px; padding: 3px 9px; border-radius: 999px; background: #f1f2f8; color: #656a80; font-size: 12px; font-weight: 700; }}
           .badge::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }}
           .badge.active, .badge.sent {{ color: var(--success); background: #ebfaf3; }}
@@ -1234,6 +1376,7 @@ def svg_sprite() -> str:
       <symbol id="icon-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="icon-user" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></symbol>
       <symbol id="icon-bag" viewBox="0 0 24 24"><path d="M6 8h12l1 13H5L6 8Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></symbol>
+      <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
       <symbol id="icon-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v10Z"/></symbol>
       <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
       <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 3-4"/></symbol>
@@ -1392,12 +1535,41 @@ def chat_thread_html(thread: list[ChatItem]) -> str:
             classes += " failed"
             meta += " · не доставлено"
             title = f' title="{e(item.error)}"'
+        text_html = f'<div class="bubble-text">{e(item.text)}</div>' if item.text else ""
         bubbles.append(
             f'<div class="{classes}"{title}>'
-            f'<div class="bubble-text">{e(item.text)}</div>'
+            f"{chat_attachments_html(item.attachments)}"
+            f"{text_html}"
             f'<div class="bubble-meta">{meta}</div></div>'
         )
     return "".join(bubbles)
+
+
+def chat_attachments_html(attachments: tuple[ChatAttachment, ...]) -> str:
+    """Фото и видео в пузырьке: картинка открывается по клику, видео играет в ленте."""
+
+    if not attachments:
+        return ""
+
+    blocks: list[str] = []
+    for attachment in attachments:
+        url = e(attachment.url)
+        label = e(attachment.name) or "Вложение"
+        if attachment.kind == "video":
+            blocks.append(
+                f'<video class="bubble-media" src="{url}" controls preload="metadata"></video>'
+            )
+        elif attachment.kind == "photo":
+            blocks.append(
+                f'<a href="{url}" target="_blank" rel="noopener">'
+                f'<img class="bubble-media" src="{url}" alt="{label}" loading="lazy"></a>'
+            )
+        else:
+            blocks.append(
+                f'<a class="bubble-file" href="{url}" target="_blank" rel="noopener">{label}</a>'
+            )
+    joined = "".join(blocks)
+    return f'<div class="bubble-media-list">{joined}</div>'
 
 
 def order_row(order: BotOrder, user: BotUser | None) -> str:
@@ -1444,6 +1616,19 @@ def user_order_row(order: BotOrder) -> str:
       <td>{e(order.total_amount)} {e(order.currency)}</td>
       <td>{e(order.status)}</td>
       <td>{format_dt(order.updated_at)}</td>
+    </tr>
+    """
+
+
+def order_status_notification_row(notification: OrderStatusNotification) -> str:
+    result = "доставлено" if notification.delivered_at else "повторная отправка"
+    return f"""
+    <tr>
+      <td>{e(notification.status)}</td>
+      <td>{status_badge(result)}</td>
+      <td>{notification.attempt_count or 0}</td>
+      <td>{format_dt(notification.last_attempt_at)}</td>
+      <td>{e(notification.error)}</td>
     </tr>
     """
 
@@ -1573,8 +1758,18 @@ async def save_broadcast_uploads(
     uploads: list[UploadFile],
     uploads_dir: Path,
 ) -> list[dict[str, str]]:
+    return await save_media_uploads(uploads, uploads_dir, "broadcasts")
+
+
+async def save_media_uploads(
+    uploads: list[UploadFile],
+    uploads_dir: Path,
+    subdir: str,
+) -> list[dict[str, str]]:
+    """Сохраняет фото/видео в uploads_dir и описывает их для отправки и показа."""
+
     saved_files: list[dict[str, str]] = []
-    target_dir = uploads_dir / "broadcasts"
+    target_dir = uploads_dir / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
 
     for upload in uploads:

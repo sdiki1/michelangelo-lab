@@ -21,7 +21,7 @@ async def notify_admins_about_telegram_message(
     user: BotUser | None,
     settings: Settings,
 ) -> None:
-    text = message.text or message.caption or "📷 Клиент прислал фотографию"
+    text = message.text or message.caption or incoming_media_placeholder(message)
     await notify_admins_about_incoming(
         settings=settings,
         source="telegram",
@@ -85,8 +85,8 @@ async def notify_admins_about_incoming(
                         notification,
                         contact_url,
                     )
-                    if telegram_message and telegram_message.photo:
-                        await copy_telegram_photo(
+                    if telegram_message and has_media(telegram_message):
+                        await copy_telegram_message(
                             client, settings, telegram_message, target.recipient_id
                         )
                     for photo_url in photo_urls or []:
@@ -167,7 +167,24 @@ async def send_telegram_admin_message(
     response.raise_for_status()
 
 
-async def copy_telegram_photo(
+def has_media(message: Message) -> bool:
+    return bool(
+        message.photo or message.video or message.animation or message.video_note
+        or message.document
+    )
+
+
+def incoming_media_placeholder(message: Message) -> str:
+    if message.photo:
+        return "📷 Клиент прислал фотографию"
+    if message.video or message.animation or message.video_note:
+        return "🎬 Клиент прислал видео"
+    if message.document:
+        return "📎 Клиент прислал файл"
+    return "Клиент прислал сообщение"
+
+
+async def copy_telegram_message(
     client: httpx.AsyncClient,
     settings: Settings,
     message: Message,

@@ -120,6 +120,41 @@ class MaxClient:
         )
         response.raise_for_status()
 
+    async def upload_attachment(
+        self,
+        *,
+        kind: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """Загружает файл в MAX и возвращает готовое вложение для send_message.
+
+        MAX принимает медиа в два шага: сначала выдаёт одноразовый upload URL,
+        затем по нему принимает файл и возвращает токен (для фото — словарь
+        ``photos``), который и подставляется в attachments сообщения.
+        """
+
+        upload_type = "video" if kind == "video" else "image"
+        response = await self._client.post(
+            "/uploads",
+            params={"type": upload_type},
+            headers=self._auth_headers,
+        )
+        response.raise_for_status()
+        upload_url = response.json().get("url")
+        if not upload_url:
+            raise RuntimeError(f"MAX did not return an upload URL for {upload_type}")
+
+        # Upload URL абсолютный и живёт вне base_url MAX API, ходим отдельным клиентом.
+        async with httpx.AsyncClient(timeout=120) as upload_client:
+            uploaded = await upload_client.post(
+                upload_url,
+                files={"data": (filename, content, content_type)},
+            )
+        uploaded.raise_for_status()
+        return max_attachment_from_upload(upload_type, upload_response_payload(uploaded))
+
     async def answer_callback(self, callback_id: str) -> None:
         response = await self._client.post(
             "/answers",
@@ -435,18 +470,60 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
     )
 
 
-def extract_photo_urls(attachments: Any) -> list[str]:
+def upload_response_payload(response: httpx.Response) -> dict[str, Any]:
+    """Ответ upload-эндпоинта MAX: обычно JSON, для видео иногда пустое тело."""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def max_attachment_from_upload(upload_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if upload_type == "image":
+        photos = payload.get("photos")
+        if isinstance(photos, dict) and photos:
+            return {"type": "image", "payload": {"photos": photos}}
+    token = payload.get("token")
+    if token:
+        return {"type": upload_type, "payload": {"token": token}}
+    raise RuntimeError(f"MAX upload response has no token: {payload}")
+
+
+MAX_MEDIA_KINDS = {
+    "image": "photo",
+    "photo": "photo",
+    "video": "video",
+}
+
+
+def extract_media(attachments: Any) -> list[dict[str, str]]:
+    """Достаёт из вложений MAX ссылки на фото и видео с их типом."""
+
     if not isinstance(attachments, list):
         return []
-    urls: list[str] = []
+    media: list[dict[str, str]] = []
+    seen: set[str] = set()
     for attachment in attachments:
-        if not isinstance(attachment, dict) or attachment.get("type") not in ("image", "photo"):
+        if not isinstance(attachment, dict):
+            continue
+        kind = MAX_MEDIA_KINDS.get(str(attachment.get("type") or ""))
+        if kind is None:
             continue
         payload = attachment.get("payload")
         if not isinstance(payload, dict):
             payload = attachment
-        urls.extend(find_http_urls(payload))
-    return list(dict.fromkeys(urls))
+        for url in find_http_urls(payload):
+            if url in seen:
+                continue
+            seen.add(url)
+            media.append({"kind": kind, "url": url})
+    return media
+
+
+def extract_photo_urls(attachments: Any) -> list[str]:
+    return [item["url"] for item in extract_media(attachments) if item["kind"] == "photo"]
 
 
 def find_http_urls(value: Any) -> list[str]:

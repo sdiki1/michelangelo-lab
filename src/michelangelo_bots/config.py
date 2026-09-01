@@ -68,6 +68,22 @@ class Settings(BaseSettings):
         alias="MAX_API_BASE_URL",
     )
     max_poll_timeout_seconds: int = Field(default=30, alias="MAX_POLL_TIMEOUT_SECONDS")
+    notification_alert_after_minutes: int = Field(
+        default=180,
+        alias="NOTIFICATION_ALERT_AFTER_MINUTES",
+    )
+    notification_alert_min_failures: int = Field(
+        default=3,
+        alias="NOTIFICATION_ALERT_MIN_FAILURES",
+    )
+    notification_alert_isolated_after_minutes: int = Field(
+        default=1440,
+        alias="NOTIFICATION_ALERT_ISOLATED_AFTER_MINUTES",
+    )
+    notification_alert_reminder_minutes: int = Field(
+        default=360,
+        alias="NOTIFICATION_ALERT_REMINDER_MINUTES",
+    )
 
     @property
     def telegram_miniapp_url(self) -> AnyUrl:

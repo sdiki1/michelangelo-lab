@@ -150,7 +150,8 @@ async def track_telegram_message(message: Message, *, action: str) -> BotUser | 
         user=user,
         action=action,
         event_type="message",
-        message_text=message.text,
+        # Подпись к фото/видео — это тоже текст клиента, без неё медиа теряет смысл.
+        message_text=message.text or message.caption,
         raw_update=message.model_dump(mode="json"),
     )
 

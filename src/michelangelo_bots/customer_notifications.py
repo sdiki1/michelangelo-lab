@@ -49,6 +49,11 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
         for order, user in result.all():
             current_status = (order.status or "").strip()
             if order.customer_notified_at is None:
+                attempted_at = datetime_now()
+                order.customer_notification_attempts = (
+                    order.customer_notification_attempts or 0
+                ) + 1
+                order.customer_notification_last_attempt_at = attempted_at
                 try:
                     await send_customer_message(
                         http_client,
@@ -61,10 +66,14 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
                     )
                 except Exception as exc:
                     order.customer_notification_error = str(exc)[:1000]
+                    order.customer_notification_first_failed_at = (
+                        order.customer_notification_first_failed_at or attempted_at
+                    )
                     logger.exception("Customer order confirmation failed: order_id=%s", order.id)
                 else:
                     order.customer_notified_at = datetime_now()
                     order.customer_notification_error = None
+                    order.customer_notification_first_failed_at = None
                     order.last_customer_status = current_status or None
                     delivered_count += 1
                 await session.commit()
@@ -95,6 +104,9 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
                 ledger = OrderStatusNotification(order_id=order.id, status=current_status)
                 session.add(ledger)
 
+            attempted_at = datetime_now()
+            ledger.attempt_count = (ledger.attempt_count or 0) + 1
+            ledger.last_attempt_at = attempted_at
             try:
                 await send_customer_message(
                     http_client,
@@ -107,10 +119,12 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
                 )
             except Exception as exc:
                 ledger.error = str(exc)[:1000]
+                ledger.first_failed_at = ledger.first_failed_at or attempted_at
                 logger.exception("Customer status notification failed: order_id=%s", order.id)
             else:
                 ledger.delivered_at = datetime_now()
                 ledger.error = None
+                ledger.first_failed_at = None
                 order.last_customer_status = current_status
                 delivered_count += 1
             await session.commit()

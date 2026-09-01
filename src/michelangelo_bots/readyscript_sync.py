@@ -25,6 +25,11 @@ from michelangelo_bots.db import (
     get_session_factory,
     init_db,
 )
+from michelangelo_bots.notification_health import (
+    monitor_customer_delivery_health,
+    record_sync_failure,
+    record_sync_success,
+)
 from michelangelo_bots.order_notifications import deliver_pending_order_notifications
 from michelangelo_bots.telegram_webapp import verify_telegram_init_data
 
@@ -64,11 +69,14 @@ async def sync_readyscript_orders(
     await session.commit()
     notified = await deliver_pending_order_notifications(session, settings)
     customer_notified = await deliver_customer_notifications(session, settings)
+    health_alerts = await monitor_customer_delivery_health(session, settings)
+    sync_recovery_alerts = await record_sync_success(session, settings)
     return {
         "imported": imported,
         "linked": linked,
         "notified": notified,
         "customer_notified": customer_notified,
+        "health_alerts": health_alerts + sync_recovery_alerts,
     }
 
 
@@ -504,8 +512,15 @@ async def run_loop(interval_seconds: int | None) -> None:
             async with session_factory() as session:
                 result = await sync_readyscript_orders(session=session, settings=settings)
             logger.info("ReadyScript sync complete: %s", result)
-        except Exception:
+        except Exception as exc:
             logger.exception("ReadyScript sync iteration failed")
+            # Use a fresh session: the failed iteration may have left its own
+            # transaction unusable. Failure to report must not stop polling.
+            try:
+                async with session_factory() as health_session:
+                    await record_sync_failure(health_session, settings, exc)
+            except Exception:
+                logger.exception("Could not persist/report ReadyScript sync failure")
 
         duration = time.monotonic() - started
         await asyncio.sleep(max(1, interval - duration))
