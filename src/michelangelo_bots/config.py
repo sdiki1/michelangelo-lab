@@ -47,7 +47,7 @@ class Settings(BaseSettings):
         alias="READYSCRIPT_SCRIPT_PATH",
     )
     readyscript_api_base: str = Field(
-        default="https://michelangelo-lab.rscms.ru/api-6cdywf0i/methods",
+        default="https://michelangelo-lab.ru/api-6cdywf0i/methods",
         alias="RS_API_BASE",
     )
     readyscript_client_id: str = Field(default="", alias="RS_CLIENT_ID")
