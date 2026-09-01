@@ -35,6 +35,23 @@ class File extends \RS\Orm\ConfigObject
                 'checkboxview' => [1, 0],
                 'default' => 0,
             ]),
+            'require_promo_code' => new Type\Integer([
+                'description' => 'Требовать промокод для оформления заказа',
+                'hint' => 'Заказ на витрине и через checkout API нельзя создать, пока к корзине не применён действующий скидочный купон.',
+                'checkboxview' => [1, 0],
+                'default' => 1,
+            ]),
+            'promo_required_message' => new Type\Varchar([
+                'maxLength' => 255,
+                'description' => 'Сообщение, если промокод не введён',
+                'default' => 'Для оформления заказа необходимо ввести действующий промокод.',
+            ]),
+            'promo_prompt_text' => new Type\Varchar([
+                'maxLength' => 255,
+                'description' => 'Текст подсказки о промокоде на сайте',
+                'hint' => 'Показывается рядом с полем промокода и кнопкой оформления заказа.',
+                'default' => 'Введите промокод — без него оформить заказ нельзя.',
+            ]),
         ]);
     }
 
@@ -46,6 +63,9 @@ class File extends \RS\Orm\ConfigObject
             'max_bot_token' => '',
             'init_data_max_age' => 86400,
             'diagnostic_log' => 0,
+            'require_promo_code' => 1,
+            'promo_required_message' => 'Для оформления заказа необходимо ввести действующий промокод.',
+            'promo_prompt_text' => 'Введите промокод — без него оформить заказ нельзя.',
         ];
     }
 }

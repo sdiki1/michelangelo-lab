@@ -1,0 +1,27 @@
+.michelangelo-promo-required {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    border: 1px solid #dc3545;
+    border-left-width: 4px;
+    border-radius: 8px;
+    background: #fff5f5;
+    color: #a61b1b;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.michelangelo-promo-required--field {
+    position: relative;
+    z-index: 1;
+    clear: both;
+    flex: 0 0 100%;
+    margin: 16px 0 12px;
+}
+
+.michelangelo-promo-required--checkout {
+    margin-top: 12px;
+}

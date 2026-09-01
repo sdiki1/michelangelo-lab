@@ -2,9 +2,9 @@
 <config>
     <defaultValues>
         <name>Michelangelo: ID мессенджера в заказе</name>
-        <description>Сохраняет проверенные Telegram/MAX ID в заказах и публикует их во внешнем API ReadyScript.</description>
-        <version>2.2.1.0</version>
-        <version_date>2026-08-15</version_date>
+        <description>Сохраняет проверенные Telegram/MAX ID в заказах и при необходимости запрещает оформление без действующего промокода.</description>
+        <version>2.3.2.0</version>
+        <version_date>2026-09-02</version_date>
         <author>Michelangelo Lab</author>
         <dependfrom>shop,externalapi</dependfrom>
         <enabled>1</enabled>
@@ -12,5 +12,8 @@
         <max_bot_token></max_bot_token>
         <init_data_max_age>86400</init_data_max_age>
         <diagnostic_log>0</diagnostic_log>
+        <require_promo_code>1</require_promo_code>
+        <promo_required_message>Для оформления заказа необходимо ввести действующий промокод.</promo_required_message>
+        <promo_prompt_text>Введите промокод — без него оформить заказ нельзя.</promo_prompt_text>
     </defaultValues>
 </config>

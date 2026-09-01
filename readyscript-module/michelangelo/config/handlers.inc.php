@@ -44,6 +44,18 @@ class Handlers extends \RS\Event\HandlerAbstract
                 'visible' => false,
                 'appVisible' => true,
             ]),
+            // Служебное runtime-поле участвует в штатной валидации заказа.
+            // condition нужен для пошагового checkout/API и позволяет
+            // ReadyScript удалить этот checker при редактировании в админке.
+            'ml_promo_gate' => new Type\Integer([
+                'description' => 'Проверка обязательного промокода',
+                'runtime' => true,
+                'visible' => false,
+                'appVisible' => false,
+                'meVisible' => false,
+                'condition' => ['step' => 'confirm'],
+                'Checker' => [[__CLASS__, 'checkRequiredPromoCode'], ''],
+            ]),
 
             // Старые поля оставлены на один переходный период. Они позволяют
             // без потери данных обновить уже установленную версию модуля.
@@ -65,6 +77,29 @@ class Handlers extends \RS\Event\HandlerAbstract
                 'appVisible' => false,
             ]),
         ]);
+    }
+
+    /**
+     * Пропускает заказ только с реально применённым действующим купоном.
+     * Проверка непустого POST-поля недостаточна: его легко подделать, а
+     * ReadyScript сам не добавляет в корзину неизвестный или истёкший купон.
+     */
+    public static function checkRequiredPromoCode(\Shop\Model\Orm\Order $order, $value, $error)
+    {
+        $config = \RS\Config\Loader::byModule('michelangelo');
+        if (empty($config['require_promo_code'])) {
+            return true;
+        }
+
+        $cart = $order->getCart();
+        if ($cart && count($cart->getCouponItems()) > 0) {
+            return true;
+        }
+
+        $message = trim((string)$config['promo_required_message']);
+        return $message !== ''
+            ? $message
+            : 'Для оформления заказа необходимо ввести действующий промокод.';
     }
 
     /**
@@ -151,22 +186,39 @@ class Handlers extends \RS\Event\HandlerAbstract
     public static function controllerBeforeWrap($params)
     {
         $config = \RS\Config\Loader::byModule('michelangelo');
-        if (empty($config['enabled']) || \RS\Router\Manager::obj()->isAdminZone()) {
+        if (\RS\Router\Manager::obj()->isAdminZone()) {
             return $params;
         }
 
         $app = \RS\Application\Application::getInstance();
-        // Внешние SDK здесь намеренно не подключаются: синхронный script в
-        // HEAD блокирует всю витрину, если CDN мессенджера недоступен.
-        // miniapp-2.2.1.js читает initData из URL и после window.load асинхронно
-        // загружает только SDK фактической платформы.
-        $app->addJsVar('michelangeloIdentity', [
-            'url' => \RS\Router\Manager::obj()->getUrl('michelangelo-front-track'),
-            'debug' => !empty($config['diagnostic_log']),
-        ]);
-        // Версия включена в имя файла: Telegram/MAX WebView агрессивно
-        // кэшируют JavaScript и иначе могут продолжить исполнять старый код.
-        $app->addJs('%michelangelo%/miniapp-2.2.1.js');
+        if (!empty($config['enabled'])) {
+            // Внешние SDK здесь намеренно не подключаются: синхронный script в
+            // HEAD блокирует всю витрину, если CDN мессенджера недоступен.
+            // miniapp-2.2.1.js читает initData из URL и после window.load
+            // асинхронно загружает только SDK фактической платформы.
+            $app->addJsVar('michelangeloIdentity', [
+                'url' => \RS\Router\Manager::obj()->getUrl('michelangelo-front-track'),
+                'debug' => !empty($config['diagnostic_log']),
+            ]);
+            // Версия включена в имя файла: Telegram/MAX WebView агрессивно
+            // кэшируют JavaScript и иначе могут исполнять старый код.
+            $app->addJs('%michelangelo%/miniapp-2.2.1.js');
+        }
+
+        if (!empty($config['require_promo_code'])) {
+            $prompt = trim((string)$config['promo_prompt_text']);
+            if ($prompt === '') {
+                $prompt = 'Введите промокод — без него оформить заказ нельзя.';
+            }
+
+            $cart = \Shop\Model\Cart::currentCart();
+            $app->addJsVar('michelangeloPromoRequirement', [
+                'text' => $prompt,
+                'applied' => $cart && count($cart->getCouponItems()) > 0,
+            ]);
+            $app->addCss('%michelangelo%/promo-required-2.3.2.css');
+            $app->addJs('%michelangelo%/promo-required-2.3.2.js');
+        }
         return $params;
     }
 
