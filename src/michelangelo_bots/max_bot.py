@@ -12,7 +12,9 @@ import httpx
 from michelangelo_bots.bot_configuration import (
     menu_buttons,
     menu_response,
+    order_values,
     render_start_template,
+    render_template,
     setting,
 )
 from michelangelo_bots.config import Settings, get_settings
@@ -24,6 +26,7 @@ from michelangelo_bots.content import (
     text_for_action,
 )
 from michelangelo_bots.db import get_session_factory, init_db
+from michelangelo_bots.order_cancellation import cancel_customer_order, get_customer_order
 from michelangelo_bots.tracking import UserSnapshot, track_interaction
 
 logger = logging.getLogger(__name__)
@@ -197,6 +200,7 @@ class MaxBot:
             )
             return
 
+        callback_answered = False
         action = action_from_incoming(incoming)
         action_value = incoming.payload or (
             "unknown_message" if is_customer_question(incoming) else action.value
@@ -204,7 +208,95 @@ class MaxBot:
         user = await track_max_interaction(incoming, action=action_value, raw_update=update)
         if is_admin_channel_message(incoming, self._settings):
             return
-        if is_customer_question(incoming):
+        if incoming.payload and incoming.payload.startswith("order_cancel:"):
+            if incoming.callback_id:
+                await self._client.answer_callback(incoming.callback_id)
+                callback_answered = True
+            order_id = callback_order_id(incoming.payload)
+            order = (
+                await get_customer_order(order_id, bot_user_id=user.id, platform="max")
+                if order_id is not None
+                else None
+            )
+            if order is None:
+                response_text = "Этот заказ недоступен."
+                keyboard = []
+            else:
+                async with get_session_factory()() as session:
+                    template = await setting(session, "customer_cancel_confirm_text")
+                    confirm_button_text = await setting(
+                        session, "customer_cancel_confirm_button_text"
+                    )
+                    abort_button_text = await setting(
+                        session, "customer_cancel_abort_button_text"
+                    )
+                response_text = render_template(template, order_values(order, user))
+                keyboard = [{
+                    "type": "inline_keyboard",
+                    "payload": {"buttons": [[
+                        {
+                            "type": "callback",
+                            "text": confirm_button_text,
+                            "payload": f"order_cancel_confirm:{order.id}",
+                        },
+                        {
+                            "type": "callback",
+                            "text": abort_button_text,
+                            "payload": f"order_cancel_abort:{order.id}",
+                        },
+                    ]]},
+                }]
+        elif incoming.payload and incoming.payload.startswith("order_cancel_confirm:"):
+            if incoming.callback_id:
+                await self._client.answer_callback(incoming.callback_id)
+                callback_answered = True
+            order_id = callback_order_id(incoming.payload)
+            if order_id is None:
+                response_text = "Этот заказ недоступен."
+                keyboard = []
+            else:
+                result = await cancel_customer_order(
+                    order_id,
+                    bot_user_id=user.id,
+                    platform="max",
+                    platform_user_id=user.platform_user_id,
+                    settings=self._settings,
+                )
+                async with get_session_factory()() as session:
+                    if result.outcome == "cancelled":
+                        key = "customer_cancel_success_text"
+                    elif result.outcome == "too_late":
+                        key = "customer_cancel_too_late_text"
+                    elif result.outcome == "processing":
+                        key = None
+                    else:
+                        key = "customer_cancel_failure_text"
+                    response_text = (
+                        render_template(
+                            await setting(session, key),
+                            {"order_number": result.order_number},
+                        )
+                        if key
+                        else "Запрос на отмену этого заказа уже обрабатывается."
+                    )
+                    manager_url = await setting(session, "max_manager_url")
+                keyboard = []
+                if result.outcome != "cancelled" and manager_url:
+                    keyboard = [{
+                        "type": "inline_keyboard",
+                        "payload": {"buttons": [[{
+                            "type": "link",
+                            "text": "✉️ Связаться с менеджером",
+                            "url": manager_url,
+                        }]]},
+                    }]
+        elif incoming.payload and incoming.payload.startswith("order_cancel_abort:"):
+            if incoming.callback_id:
+                await self._client.answer_callback(incoming.callback_id)
+                callback_answered = True
+            response_text = "Заказ не отменён."
+            keyboard = []
+        elif is_customer_question(incoming):
             from michelangelo_bots.inbound_notifications import notify_admins_about_incoming
 
             await notify_admins_about_incoming(
@@ -247,7 +339,7 @@ class MaxBot:
             recipient_type=recipient_type,
         )
 
-        if incoming.callback_id:
+        if incoming.callback_id and not callback_answered:
             await self._client.answer_callback(incoming.callback_id)
 
     async def polling(self) -> None:
@@ -302,6 +394,13 @@ def action_from_incoming(incoming: IncomingMessage) -> Action:
         return Action(incoming.payload)
     except ValueError:
         return Action.MAIN_MENU
+
+
+def callback_order_id(payload: str | None) -> int | None:
+    try:
+        return int((payload or "").rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def is_customer_question(incoming: IncomingMessage) -> bool:

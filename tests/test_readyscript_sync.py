@@ -94,3 +94,25 @@ def test_order_pagination_uses_actual_collected_count_when_api_caps_page_size() 
     orders = client.get_all_orders()
 
     assert [order["id"] for order in orders] == ["1", "2", "3", "4", "5"]
+
+
+def test_cancel_order_calls_protected_module_method_with_customer_identity() -> None:
+    script = load_readyscript_script(ROOT / "readyscript-orders" / "script.py")
+    client = object.__new__(script.ReadyScriptClient)
+    captured = {}
+
+    def fake_authorized_post(method, data):  # noqa: ANN001
+        captured.update({"method": method, "data": data})
+        return {"success": True}
+
+    client._authorized_post = fake_authorized_post
+
+    assert client.cancel_order("15", "telegram", "123") == {"success": True}
+    assert captured == {
+        "method": "michelangelo.cancelOrder",
+        "data": {
+            "order_id": "15",
+            "platform": "telegram",
+            "platform_user_id": "123",
+        },
+    }

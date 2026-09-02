@@ -262,7 +262,10 @@ async def upsert_order(
     order.customer_name = identity.get("full_name")
     order.customer_phone = identity.get("phone")
     order.customer_email = identity.get("email")
-    order.raw_payload = raw_order
+    cancellation_audit = (order.raw_payload or {}).get("customer_cancellation")
+    order.raw_payload = dict(raw_order)
+    if cancellation_audit:
+        order.raw_payload["customer_cancellation"] = cancellation_audit
     order.updated_at = now
 
     if bot_user:

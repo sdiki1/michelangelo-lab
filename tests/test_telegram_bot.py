@@ -1,5 +1,5 @@
 from michelangelo_bots.content import Action, MenuButton
-from michelangelo_bots.telegram_bot import telegram_keyboard
+from michelangelo_bots.telegram_bot import callback_order_id, telegram_keyboard
 
 
 def test_telegram_keyboard_builds_callback_and_web_app_buttons() -> None:
@@ -36,3 +36,9 @@ def test_configured_external_link_is_not_forced_into_web_app() -> None:
 
     assert keyboard.inline_keyboard[0][0].url == "https://example.com/docs"
     assert keyboard.inline_keyboard[0][0].web_app is None
+
+
+def test_order_cancel_callback_parser_accepts_only_numeric_ids() -> None:
+    assert callback_order_id("order_cancel:42") == 42
+    assert callback_order_id("order_cancel_confirm:42") == 42
+    assert callback_order_id("order_cancel:bad") is None

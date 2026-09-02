@@ -60,7 +60,7 @@ def test_promo_code_is_required_by_default_and_message_is_configurable() -> None
     assert "'promo_prompt_text'" in config
     assert "'require_promo_code' => 1" in config
     assert "<require_promo_code>1</require_promo_code>" in module_xml
-    assert "<version>2.3.2.0</version>" in module_xml
+    assert "<version>2.4.0.0</version>" in module_xml
 
 
 def test_checkout_requires_an_applied_coupon_not_just_request_text() -> None:
@@ -90,3 +90,20 @@ def test_configurable_promo_prompt_is_added_to_cart_and_checkout() -> None:
     assert "MutationObserver" in script
     assert "getCouponLabel" in script
     assert "var anchor = label && label.parentNode ? label : form" in script
+
+
+def test_customer_cancellation_uses_readyscript_delivery_contract() -> None:
+    cancel_method = (
+        MODULE / "model" / "externalapi" / "michelangelo" / "cancelorder.inc.php"
+    ).read_text()
+
+    assert "class CancelOrder extends AbstractAuthorizedMethod" in cancel_method
+    assert "hash_equals" in cancel_method
+    assert "InterfaceDeliveryOrder" in cancel_method
+    assert "deleteDeliveryOrder($delivery_order)" in cancel_method
+    assert "UserStatus::STATUS_CANCELLED" in cancel_method
+    assert "$order->update()" in cancel_method
+    assert "deleteDeliveryOrder($delivery_order)" in cancel_method
+    delivery_call = cancel_method.index("$deleted_count = $this->deleteDeliveryOrders($order)")
+    status_change = cancel_method.index("$order['status'] = reset($cancelled_statuses)")
+    assert delivery_call < status_change

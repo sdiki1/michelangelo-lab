@@ -7,7 +7,12 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from michelangelo_bots.bot_configuration import order_values, render_template, setting
+from michelangelo_bots.bot_configuration import (
+    is_terminal_order_status,
+    order_values,
+    render_template,
+    setting,
+)
 from michelangelo_bots.config import Settings
 from michelangelo_bots.db import (
     BotOrder,
@@ -36,6 +41,7 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
     status_template = await setting(session, "customer_status_template")
     telegram_manager_url = await setting(session, "telegram_manager_url")
     max_manager_url = await setting(session, "max_manager_url")
+    cancel_button_text = await setting(session, "customer_cancel_button_text")
     delivered_count = 0
 
     async with httpx.AsyncClient(
@@ -63,6 +69,8 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
                         render_template(confirmation_template, order_values(order, user)),
                         telegram_manager_url=telegram_manager_url,
                         max_manager_url=max_manager_url,
+                        order=order,
+                        cancel_button_text=cancel_button_text,
                     )
                 except Exception as exc:
                     order.customer_notification_error = str(exc)[:1000]
@@ -86,6 +94,13 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
                 await session.commit()
                 continue
             if order.last_customer_status == current_status:
+                continue
+
+            # Успешную отмену обработчик кнопки подтверждает сразу. Polling
+            # только выравнивает локальный текст статуса с ReadyScript.
+            if order.cancellation_state == "cancelled":
+                order.last_customer_status = current_status
+                await session.commit()
                 continue
 
             ledger = (
@@ -116,6 +131,8 @@ async def deliver_customer_notifications(session: AsyncSession, settings: Settin
                     render_template(status_template, order_values(order, user)),
                     telegram_manager_url=telegram_manager_url,
                     max_manager_url=max_manager_url,
+                    order=order,
+                    cancel_button_text=cancel_button_text,
                 )
             except Exception as exc:
                 ledger.error = str(exc)[:1000]
@@ -141,6 +158,8 @@ async def send_customer_message(
     *,
     telegram_manager_url: str,
     max_manager_url: str,
+    order: BotOrder,
+    cancel_button_text: str,
 ) -> None:
     recipient = user.chat_id or user.platform_user_id
     if not recipient:
@@ -149,13 +168,13 @@ async def send_customer_message(
         if not settings.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
         payload: dict[str, Any] = {"chat_id": recipient, "text": text}
-        if telegram_manager_url:
-            payload["reply_markup"] = {
-                "inline_keyboard": [[{
-                    "text": "✉️ Связаться с менеджером",
-                    "url": telegram_manager_url,
-                }]]
-            }
+        keyboard = telegram_customer_keyboard(
+            order,
+            manager_url=telegram_manager_url,
+            cancel_button_text=cancel_button_text,
+        )
+        if keyboard:
+            payload["reply_markup"] = keyboard
         response = await http_client.post(
             f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
             json=payload,
@@ -169,20 +188,11 @@ async def send_customer_message(
     if user.platform == "max":
         if not settings.max_bot_token:
             raise RuntimeError("MAX_BOT_TOKEN is not set")
-        attachments: list[dict[str, Any]] = []
-        if max_manager_url:
-            attachments.append(
-                {
-                    "type": "inline_keyboard",
-                    "payload": {
-                        "buttons": [[{
-                            "type": "link",
-                            "text": "✉️ Связаться с менеджером",
-                            "url": max_manager_url,
-                        }]]
-                    },
-                }
-            )
+        attachments = max_customer_keyboard(
+            order,
+            manager_url=max_manager_url,
+            cancel_button_text=cancel_button_text,
+        )
         await max_client.send_message(
             recipient,
             text,
@@ -192,6 +202,57 @@ async def send_customer_message(
         return
 
     raise RuntimeError(f"Unsupported customer platform: {user.platform}")
+
+
+def can_customer_cancel(order: BotOrder) -> bool:
+    return (
+        order.cancellation_state != "cancelled"
+        and not is_terminal_order_status(order.status)
+    )
+
+
+def telegram_customer_keyboard(
+    order: BotOrder,
+    *,
+    manager_url: str,
+    cancel_button_text: str,
+) -> dict[str, Any] | None:
+    rows: list[list[dict[str, str]]] = []
+    if manager_url:
+        rows.append([{
+            "text": "✉️ Связаться с менеджером",
+            "url": manager_url,
+        }])
+    if cancel_button_text and can_customer_cancel(order):
+        rows.append([{
+            "text": cancel_button_text,
+            "callback_data": f"order_cancel:{order.id}",
+        }])
+    return {"inline_keyboard": rows} if rows else None
+
+
+def max_customer_keyboard(
+    order: BotOrder,
+    *,
+    manager_url: str,
+    cancel_button_text: str,
+) -> list[dict[str, Any]]:
+    rows: list[list[dict[str, str]]] = []
+    if manager_url:
+        rows.append([{
+            "type": "link",
+            "text": "✉️ Связаться с менеджером",
+            "url": manager_url,
+        }])
+    if cancel_button_text and can_customer_cancel(order):
+        rows.append([{
+            "type": "callback",
+            "text": cancel_button_text,
+            "payload": f"order_cancel:{order.id}",
+        }])
+    if not rows:
+        return []
+    return [{"type": "inline_keyboard", "payload": {"buttons": rows}}]
 
 
 def extract_delivery_status(raw_order: dict[str, Any]) -> str | None:

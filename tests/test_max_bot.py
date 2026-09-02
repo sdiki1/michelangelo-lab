@@ -9,6 +9,7 @@ from michelangelo_bots.max_bot import (
     MaxBot,
     MaxClient,
     action_from_incoming,
+    callback_order_id,
     get_my_id_text,
     is_get_my_id_command,
     max_keyboard,
@@ -220,6 +221,12 @@ async def test_max_bot_sends_about_for_callback() -> None:
 
 def test_unknown_text_returns_main_menu() -> None:
     assert action_from_incoming(IncomingMessage(chat_id=123, text="hello")) is Action.MAIN_MENU
+
+
+def test_order_cancel_callback_parser_accepts_only_numeric_ids() -> None:
+    assert callback_order_id("order_cancel:42") == 42
+    assert callback_order_id("order_cancel_confirm:42") == 42
+    assert callback_order_id("order_cancel:bad") is None
 
 
 def test_retry_after_seconds_parses_header() -> None:

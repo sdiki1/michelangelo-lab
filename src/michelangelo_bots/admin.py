@@ -21,7 +21,13 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, desc, func, select
@@ -54,6 +60,13 @@ from michelangelo_bots.inbound_notifications import notify_admins_about_incoming
 from michelangelo_bots.rs_api import router as readyscript_router
 from michelangelo_bots.telegram_webapp import verify_telegram_init_data
 from michelangelo_bots.tracking import UserSnapshot, find_user, track_interaction
+from michelangelo_bots.user_import import (
+    MAX_IMPORT_BYTES,
+    UserImportApplyResult,
+    UserImportParseResult,
+    import_user_records,
+    parse_user_import,
+)
 
 security = HTTPBasic()
 app = FastAPI(title="Michelangelo Bot Admin")
@@ -281,6 +294,9 @@ async def clients(
     return page(
         "Список клиентов",
         f"""
+        <div class="toolbar">
+          <a class="button-link" href="/users/import">{icon("upload")} Перенести пользователей</a>
+        </div>
         <form class="filters" method="get">
           <input name="q" value="{e(q)}" placeholder="Введите: Telegram / ФИО / Телефон / Email">
           <select name="messenger">
@@ -395,6 +411,13 @@ async def bot_settings_page(
             ("admin_incoming_template", "Входящее сообщение клиента", 9),
             ("customer_order_template", "Подтверждение заказа клиенту", 8),
             ("customer_status_template", "Изменение статуса СДЭК", 7),
+            ("customer_cancel_button_text", "Текст кнопки отмены заказа", 2),
+            ("customer_cancel_confirm_button_text", "Текст подтверждающей кнопки", 2),
+            ("customer_cancel_abort_button_text", "Текст кнопки отказа от отмены", 2),
+            ("customer_cancel_confirm_text", "Подтверждение отмены заказа", 4),
+            ("customer_cancel_success_text", "Успешная отмена заказа", 4),
+            ("customer_cancel_failure_text", "Ошибка автоматической отмены", 4),
+            ("customer_cancel_too_late_text", "Заказ уже нельзя отменить", 4),
             ("incoming_ack_text", "Ответ клиенту после обращения", 4),
             ("notification_failure_template", "Системный сбой доставки уведомлений", 9),
             ("notification_recovery_template", "Восстановление доставки уведомлений", 4),
@@ -1042,6 +1065,9 @@ async def users(
     return page(
         "Пользователи",
         f"""
+        <div class="toolbar">
+          <a class="button-link" href="/users/import">{icon("upload")} Перенести пользователей</a>
+        </div>
         <form class="filters" method="get">
           <input name="q" value="{e(q)}" placeholder="Поиск: username, имя, id, chat_id">
           <select name="platform">
@@ -1064,6 +1090,76 @@ async def users(
           </table>
         </div>
         """,
+    )
+
+
+@app.get("/users/import", response_class=HTMLResponse)
+async def user_import_page(
+    _: Annotated[str, Depends(require_admin)],
+) -> str:
+    return page("Импорт пользователей", user_import_form())
+
+
+@app.get("/users/import/template")
+async def user_import_template(
+    _: Annotated[str, Depends(require_admin)],
+) -> Response:
+    header = (
+        "platform,platform_user_id,chat_id,username,first_name,last_name,full_name,"
+        "phone,email,status,referral,comment,first_seen_at,last_seen_at,total_actions\r\n"
+    )
+    return Response(
+        content="\ufeff" + header,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="users-import-template.csv"'},
+    )
+
+
+@app.post("/users/import", response_class=HTMLResponse)
+async def import_users_from_file(
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_file: Annotated[UploadFile, File()],
+    operation: Annotated[str, Form()] = "preview",
+    default_platform: Annotated[str, Form()] = "",
+    existing_mode: Annotated[str, Form()] = "merge",
+    id_is_platform_user_id: Annotated[str | None, Form()] = None,
+) -> HTMLResponse:
+    if operation not in {"preview", "import"}:
+        raise HTTPException(status_code=422, detail="Invalid import operation")
+    if default_platform not in {"", "telegram", "max"}:
+        raise HTTPException(status_code=422, detail="Invalid default platform")
+    if existing_mode not in {"merge", "overwrite", "skip"}:
+        raise HTTPException(status_code=422, detail="Invalid existing user mode")
+    content = await user_file.read(MAX_IMPORT_BYTES + 1)
+    try:
+        parsed = parse_user_import(
+            user_file.filename or "users.csv",
+            content,
+            default_platform=default_platform or None,
+            id_is_platform_user_id=id_is_platform_user_id is not None,
+        )
+        applied = await import_user_records(
+            session,
+            parsed.records,
+            apply=operation == "import",
+            existing_mode=existing_mode,
+            source_filename=parsed.filename,
+        )
+    except ValueError as exc:
+        return HTMLResponse(
+            page(
+                "Импорт пользователей",
+                f'<div class="notice danger">{e(exc)}</div>{user_import_form()}',
+            ),
+            status_code=422,
+        )
+    return HTMLResponse(
+        page(
+            "Импорт пользователей",
+            user_import_report(parsed, applied, imported=operation == "import")
+            + user_import_form(),
+        )
     )
 
 
@@ -1178,6 +1274,10 @@ def page(title: str, body: str) -> str:
         "Рассылка по клиентам": ("Рассылки", "Создание и история сообщений для клиентов"),
         "Путь клиента": ("Путь клиента", "Хронология взаимодействий пользователей с ботами"),
         "Пользователи": ("Пользователи", "Аккаунты, активность и данные пользователей"),
+        "Импорт пользователей": (
+            "Импорт пользователей",
+            "Безопасный перенос клиентской базы из старой админки",
+        ),
         "Настройки ботов": ("Настройки", "Тексты, уведомления и меню Telegram/MAX"),
     }
     default_meta = ("Пользователи", "Профиль, заказы и история взаимодействий пользователя")
@@ -1385,6 +1485,7 @@ def svg_sprite() -> str:
       <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
       <symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M8 17h8"/></symbol>
       <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+      <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></symbol>
     </defs></svg>
     """
 
@@ -1440,6 +1541,131 @@ def validate_menu_item(platform: str, kind: str, title: str, url: str) -> None:
         raise HTTPException(status_code=422, detail="Title is required")
     if kind == "link" and not url.strip().startswith(("https://", "http://")):
         raise HTTPException(status_code=422, detail="Link URL must start with http:// or https://")
+
+
+def user_import_form() -> str:
+    return """
+    <article>
+      <h2>Загрузить базу из старой админки</h2>
+      <p class="muted">Поддерживаются CSV, TSV и XLSX до 15 МБ и 50 000 строк.
+      Сначала используйте «Проверить файл»: база при этом не изменяется.</p>
+      <p><a class="button-link secondary" href="/users/import/template">Скачать CSV-шаблон</a></p>
+      <form class="broadcast-form" method="post" action="/users/import"
+            enctype="multipart/form-data">
+        <label>Файл пользователей
+          <input type="file" name="user_file" accept=".csv,.tsv,.txt,.xlsx" required>
+        </label>
+        <div class="form-grid">
+          <label>Платформа по умолчанию
+            <select name="default_platform">
+              <option value="">Определить из файла</option>
+              <option value="telegram">Telegram</option>
+              <option value="max">MAX</option>
+            </select>
+          </label>
+          <label>Если пользователь уже существует
+            <select name="existing_mode">
+              <option value="merge">Дополнить только пустые поля</option>
+              <option value="overwrite">Перезаписать данными из файла</option>
+              <option value="skip">Не изменять</option>
+            </select>
+          </label>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" name="id_is_platform_user_id" value="1">
+          <span>Колонка «ID» содержит именно Telegram/MAX User ID</span>
+        </label>
+        <p class="muted">Флажок для колонки «ID» включайте только если это ID клиента
+        в мессенджере, а не внутренний номер записи старой админки. Обязательны
+        Platform User ID либо отдельные Telegram ID/MAX ID. Колонки можно называть
+        по-русски или по-английски.</p>
+        <div class="actions">
+          <button name="operation" value="preview">Проверить файл</button>
+          <button name="operation" value="import">Импортировать валидные строки</button>
+        </div>
+      </form>
+    </article>
+    <article>
+      <h2>Что переносится</h2>
+      <p class="muted">Мессенджер и User ID, chat_id, ник, имя, ФИО, телефон,
+      email, статус, реферал, комментарий, даты регистрации/активности и счётчик
+      действий. Дубли определяются по паре «мессенджер + User ID».</p>
+      <div class="notice danger">Важно: если используется новый бот с другим токеном,
+      Telegram/MAX не позволят написать старым пользователям, пока они сами не запустят
+      нового бота. При сохранении прежнего бота и токена перенесённые chat_id остаются рабочими.</div>
+    </article>
+    """
+
+
+def user_import_report(
+    parsed: UserImportParseResult,
+    applied: UserImportApplyResult,
+    *,
+    imported: bool,
+) -> str:
+    action = "Импорт завершён" if imported else "Предварительная проверка завершена"
+    action_hint = (
+        "Валидные пользователи записаны в базу."
+        if imported
+        else "База не изменялась. Для переноса загрузите файл ещё раз и нажмите «Импортировать»."
+    )
+    errors = "".join(
+        f"<tr><td>{issue.row}</td><td>{e(issue.message)}</td></tr>"
+        for issue in parsed.errors[:200]
+    )
+    warnings = "".join(
+        f"<tr><td>{issue.row}</td><td>{e(issue.message)}</td></tr>"
+        for issue in parsed.warnings[:200]
+    )
+    sample = "".join(
+        f"""
+        <tr>
+          <td>{record.row}</td><td>{platform_badge(record.platform)}</td>
+          <td>{e(record.platform_user_id)}</td><td>{e(record.chat_id)}</td>
+          <td>{e(record.username)}</td><td>{e(record.full_name)}</td>
+          <td>{e(record.phone)}</td><td>{e(record.email)}</td><td>{e(record.status or 'active')}</td>
+        </tr>
+        """
+        for record in parsed.records[:100]
+    )
+    issue_sections = ""
+    if errors:
+        issue_sections += f"""
+        <article><h2>Ошибки строк — пропущено: {len(parsed.errors)}</h2>
+          <div class="table-wrap"><table><thead><tr><th>Строка</th><th>Ошибка</th></tr></thead>
+          <tbody>{errors}</tbody></table></div>
+        </article>"""
+    if warnings:
+        issue_sections += f"""
+        <article><h2>Предупреждения: {len(parsed.warnings)}</h2>
+          <div class="table-wrap"><table><thead><tr><th>Строка</th><th>Предупреждение</th></tr></thead>
+          <tbody>{warnings}</tbody></table></div>
+        </article>"""
+    return f"""
+    <div class="notice success">{action}. {action_hint}</div>
+    <section class="stats">
+      {stat_card("Строк в файле", parsed.total_rows)}
+      {stat_card("Валидных пользователей", len(parsed.records))}
+      {stat_card("Ошибок", len(parsed.errors))}
+      {stat_card("Будет/создано", applied.created)}
+      {stat_card("Будет/обновлено", applied.updated)}
+      {stat_card("Дубликатов в файле", parsed.duplicate_rows)}
+    </section>
+    <article>
+      <h2>Результат для существующих записей</h2>
+      <p>Без изменений: {applied.unchanged}. Пропущено настройкой: {applied.skipped_existing}.
+      Пустых строк: {parsed.blank_rows}.</p>
+    </article>
+    {issue_sections}
+    <article><h2>Предпросмотр валидных записей</h2>
+      <p class="muted">Показаны первые {min(100, len(parsed.records))} записей.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Строка</th><th>Платформа</th><th>User ID</th><th>Chat ID</th>
+        <th>Ник</th><th>ФИО</th><th>Телефон</th><th>Email</th><th>Статус</th></tr></thead>
+        <tbody>{sample}</tbody>
+      </table></div>
+    </article>
+    """
 
 
 def user_row(user: BotUser) -> str:

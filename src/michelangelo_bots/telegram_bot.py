@@ -16,7 +16,9 @@ from aiogram.types import (
 from michelangelo_bots.bot_configuration import (
     menu_buttons,
     menu_response,
+    order_values,
     render_start_template,
+    render_template,
     setting,
 )
 from michelangelo_bots.config import get_settings
@@ -28,6 +30,11 @@ from michelangelo_bots.content import (
 )
 from michelangelo_bots.db import get_session_factory, init_db
 from michelangelo_bots.inbound_notifications import notify_admins_about_telegram_message
+from michelangelo_bots.order_cancellation import (
+    CancellationResult,
+    cancel_customer_order,
+    get_customer_order,
+)
 from michelangelo_bots.order_notifications import parse_recipient_ids
 from michelangelo_bots.tracking import track_telegram_callback, track_telegram_message
 
@@ -85,6 +92,77 @@ async def handle_start(message: Message) -> None:
     )
 
 
+@router.callback_query(F.data.startswith("order_cancel:"))
+async def handle_order_cancel_request(callback: CallbackQuery) -> None:
+    order_id = callback_order_id(callback.data)
+    user = await track_telegram_callback(callback, action=callback.data or "order_cancel")
+    if order_id is None or user is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    order = await get_customer_order(
+        order_id,
+        bot_user_id=user.id,
+        platform="telegram",
+    )
+    if order is None:
+        await callback.answer("Этот заказ недоступен", show_alert=True)
+        return
+    async with get_session_factory()() as session:
+        template = await setting(session, "customer_cancel_confirm_text")
+        confirm_button_text = await setting(session, "customer_cancel_confirm_button_text")
+        abort_button_text = await setting(session, "customer_cancel_abort_button_text")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=confirm_button_text,
+            callback_data=f"order_cancel_confirm:{order.id}",
+        ),
+        InlineKeyboardButton(
+            text=abort_button_text,
+            callback_data=f"order_cancel_abort:{order.id}",
+        ),
+    ]])
+    if callback.message:
+        await callback.message.answer(
+            render_template(template, order_values(order, user)),
+            reply_markup=keyboard,
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("order_cancel_confirm:"))
+async def handle_order_cancel_confirm(callback: CallbackQuery) -> None:
+    order_id = callback_order_id(callback.data)
+    user = await track_telegram_callback(callback, action=callback.data or "order_cancel_confirm")
+    if order_id is None or user is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    await callback.answer("Отменяем заказ…")
+    result = await cancel_customer_order(
+        order_id,
+        bot_user_id=user.id,
+        platform="telegram",
+        platform_user_id=user.platform_user_id,
+        settings=get_settings(),
+    )
+    async with get_session_factory()() as session:
+        text, manager_url = await cancellation_result_message(session, result, "telegram")
+    keyboard = None
+    if result.outcome != "cancelled" and manager_url:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✉️ Связаться с менеджером", url=manager_url)
+        ]])
+    if callback.message:
+        await callback.message.answer(text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("order_cancel_abort:"))
+async def handle_order_cancel_abort(callback: CallbackQuery) -> None:
+    await track_telegram_callback(callback, action=callback.data or "order_cancel_abort")
+    if callback.message:
+        await callback.message.answer("Заказ не отменён.")
+    await callback.answer()
+
+
 @router.callback_query(F.data.in_({action.value for action in Action}))
 async def handle_menu_callback(callback: CallbackQuery) -> None:
     action = Action(callback.data)
@@ -140,6 +218,29 @@ def telegram_display_name(message_or_callback: Message | CallbackQuery) -> str |
     if user is None:
         return None
     return user.full_name or user.username
+
+
+def callback_order_id(payload: str | None) -> int | None:
+    try:
+        return int((payload or "").rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+async def cancellation_result_message(session, result: CancellationResult, platform: str):
+    if result.outcome == "cancelled":
+        key = "customer_cancel_success_text"
+    elif result.outcome == "too_late":
+        key = "customer_cancel_too_late_text"
+    elif result.outcome == "processing":
+        return "Запрос на отмену этого заказа уже обрабатывается.", ""
+    else:
+        key = "customer_cancel_failure_text"
+    template = await setting(session, key)
+    manager_key = "telegram_manager_url" if platform == "telegram" else "max_manager_url"
+    return render_template(template, {"order_number": result.order_number}), await setting(
+        session, manager_key
+    )
 
 
 async def run() -> None:

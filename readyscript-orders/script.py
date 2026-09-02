@@ -250,6 +250,33 @@ class ReadyScriptClient:
                 retry_authorization=False,
             )
 
+    def _authorized_post(
+        self,
+        method: str,
+        data: dict[str, Any],
+        retry_authorization: bool = True,
+    ) -> dict[str, Any]:
+        token = self.ensure_token()
+        try:
+            response = self.session.post(
+                f"{self.api_base}/{method}",
+                params={"v": "1", "lang": "ru", "token": token},
+                json=data,
+                timeout=REQUEST_TIMEOUT,
+            )
+            return self._parse_response(response)
+        except ReadyScriptAPIError:
+            if not retry_authorization:
+                raise
+            logger.warning(
+                "Метод %s вернул ошибку. Обновляем токен и повторяем запрос",
+                method,
+            )
+            self.token = None
+            self.token_expire = None
+            self.authorize()
+            return self._authorized_post(method, data, retry_authorization=False)
+
     def get_orders_page(self, page: int) -> dict[str, Any]:
         params = [
             ("sort", "id"),
@@ -284,6 +311,22 @@ class ReadyScriptClient:
             method="user.get",
             params={
                 "user_id": str(user_id),
+            },
+        )
+
+    def cancel_order(
+        self,
+        order_id: int | str,
+        platform: str,
+        platform_user_id: int | str,
+    ) -> dict[str, Any]:
+        """Cancels an order and its delivery order through the Michelangelo RS module."""
+        return self._authorized_post(
+            method="michelangelo.cancelOrder",
+            data={
+                "order_id": str(order_id),
+                "platform": platform,
+                "platform_user_id": str(platform_user_id),
             },
         )
 

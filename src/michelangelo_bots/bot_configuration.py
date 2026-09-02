@@ -40,6 +40,25 @@ DEFAULT_SETTINGS: dict[str, str] = {
         "📦 Статус заказа №{order_number} изменился\n\n"
         "{status_title}"
     ),
+    "customer_cancel_button_text": "❌ Отменить заказ",
+    "customer_cancel_confirm_button_text": "Да, отменить",
+    "customer_cancel_abort_button_text": "Нет",
+    "customer_cancel_confirm_text": (
+        "Отменить заказ №{order_number}? Если заказ уже передан в СДЭК, "
+        "заявка на доставку также будет отменена."
+    ),
+    "customer_cancel_success_text": (
+        "✅ Заказ №{order_number} отменён. Заявка на доставку в СДЭК также отменена, "
+        "если она уже была создана."
+    ),
+    "customer_cancel_failure_text": (
+        "Не удалось отменить заказ №{order_number} автоматически. "
+        "Пожалуйста, свяжитесь с менеджером."
+    ),
+    "customer_cancel_too_late_text": (
+        "Заказ №{order_number} уже нельзя отменить автоматически. "
+        "Пожалуйста, свяжитесь с менеджером."
+    ),
     "incoming_ack_text": (
         "Спасибо! Сообщение передано менеджеру. Он ответит вам в этом чате."
     ),
@@ -188,6 +207,22 @@ def status_title(status: str | None) -> str:
     raw = (status or "").strip()
     normalized = raw.lower().replace("-", "_").replace(" ", "_")
     return STATUS_TITLES.get(normalized, raw or "Статус уточняется")
+
+
+def is_terminal_order_status(status: str | None) -> bool:
+    normalized = (status or "").strip().lower().replace("-", "_").replace(" ", "_")
+    terminal_markers = (
+        "cancel",
+        "отмен",
+        "received",
+        "delivered",
+        "выдан",
+        "вручен",
+        "доставлен",
+        "success",
+        "completed",
+    )
+    return any(marker in normalized for marker in terminal_markers)
 
 
 def render_start_template(template: str, name: str | None) -> str:

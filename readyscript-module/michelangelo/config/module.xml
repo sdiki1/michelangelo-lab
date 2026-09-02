@@ -2,8 +2,8 @@
 <config>
     <defaultValues>
         <name>Michelangelo: ID мессенджера в заказе</name>
-        <description>Сохраняет проверенные Telegram/MAX ID в заказах и при необходимости запрещает оформление без действующего промокода.</description>
-        <version>2.3.2.0</version>
+        <description>Сохраняет проверенные Telegram/MAX ID, требует промокод и безопасно отменяет клиентские заказы вместе с заявкой СДЭК.</description>
+        <version>2.4.0.0</version>
         <version_date>2026-09-02</version_date>
         <author>Michelangelo Lab</author>
         <dependfrom>shop,externalapi</dependfrom>

@@ -86,6 +86,20 @@ The admin panel uses HTTP Basic Auth with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 It shows total users, Telegram/MAX split, total actions, popular actions, recent events,
 user search/filtering, user profiles, raw platform profile data, and interaction history.
 
+### Перенос пользователей из старой админки
+
+В разделах `/clients` и `/users` доступна кнопка «Перенести пользователей». Мастер
+принимает CSV/TSV (UTF-8 или Windows-1251) и XLSX до 15 МБ/50 000 строк, показывает
+предварительную проверку и отчёт по ошибкам, а затем создаёт новых пользователей или
+дополняет, перезаписывает либо пропускает существующих. Дубли определяются по паре
+«мессенджер + User ID». Идентификаторы импортируются как текст, поэтому ведущие нули
+из текстовых ячеек Excel не теряются. На странице доступен CSV-шаблон.
+
+Если в старой выгрузке колонка называется просто `ID`, её нужно явно подтвердить как
+Telegram/MAX User ID и выбрать платформу. Это защищает от случайного импорта внутреннего
+номера записи старой админки. При смене токена бота мессенджер может запретить отправку
+перенесённому пользователю, пока тот не запустит нового бота самостоятельно.
+
 ### Bot settings and customer notifications
 
 `/bot-settings` manages the shared Telegram/MAX menu, response pages, administrator
@@ -197,6 +211,14 @@ signed Telegram/MAX mini-app identity, verifies it inside ReadyScript, and write
 `appVisible`, so the `readyscript-sync` service reads them through the standard
 ReadyScript API. No outgoing ReadyScript webhook or module cron is required for
 order synchronization.
+
+Order notifications in Telegram and MAX also include a configurable cancel
+button. A confirmed request is ownership-checked, de-duplicated, then sent to
+the module's protected `michelangelo.cancelOrder` API method. ReadyScript uses
+the delivery type's native deletion method, so a CDEK 2.0 delivery order is
+deleted from CDEK before the ReadyScript order is marked cancelled. Enable this
+method and its cancellation right for the polling OAuth application after
+installing module version 2.4.0.0.
 
 PostgreSQL runs in the same compose stack and stores data in the `postgres-data` Docker volume.
 Tables are created automatically on service startup:

@@ -132,6 +132,17 @@ class BotOrder(Base):
         DateTime(timezone=True), index=True
     )
     last_customer_status: Mapped[str | None] = mapped_column(String(128), index=True)
+    cancellation_state: Mapped[str] = mapped_column(
+        String(32), default="none", index=True
+    )
+    cancellation_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    cancellation_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=datetime_now,
@@ -396,6 +407,30 @@ async def init_db() -> None:
                 "ALTER TABLE bot_orders "
                 "ADD COLUMN IF NOT EXISTS last_customer_status VARCHAR(128)"
             )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS "
+                "cancellation_state VARCHAR(32) DEFAULT 'none'"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS "
+                "cancellation_attempts INTEGER DEFAULT 0"
+            )
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS "
+                "cancellation_requested_at TIMESTAMPTZ"
+            )
+        )
+        await connection.execute(
+            text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ")
+        )
+        await connection.execute(
+            text("ALTER TABLE bot_orders ADD COLUMN IF NOT EXISTS cancellation_error TEXT")
         )
         await connection.execute(
             text(
