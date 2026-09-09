@@ -358,9 +358,8 @@ def extract_platform_user_id(
         if direct_value is not None and str(direct_value).strip():
             return str(direct_value).strip()
 
-    if (
-        raw_order.get("ml_platform") == platform
-        and scalar_string(raw_order.get("ml_platform_user_id"))
+    if raw_order.get("ml_platform") == platform and scalar_string(
+        raw_order.get("ml_platform_user_id")
     ):
         return scalar_string(raw_order.get("ml_platform_user_id"))
 
@@ -413,9 +412,21 @@ async def find_or_create_bot_user(
             continue
         column = BotUser.phone if field_name == "phone" else BotUser.email
         result = await session.execute(select(BotUser).where(column == value))
-        user = result.scalar_one_or_none()
-        if user is not None:
-            return user
+        users = list(result.scalars())
+        if len(users) == 1:
+            return users[0]
+        if len(users) > 1:
+            # Phone and email are contact data, not a messenger identity. They
+            # can be shared by family members or duplicated by an import. Do
+            # not choose a recipient arbitrarily: that could disclose order
+            # data to the wrong person or stop the entire sync.
+            logger.warning(
+                "ReadyScript order has ambiguous %s=%s: %s bot users match; "
+                "order will remain unlinked until a Telegram/MAX ID is known",
+                field_name,
+                value,
+                len(users),
+            )
 
     return None
 

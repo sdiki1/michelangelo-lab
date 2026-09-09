@@ -1,9 +1,13 @@
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from michelangelo_bots.config import Settings
 from michelangelo_bots.readyscript_sync import (
     extract_customer_identity,
     extract_platform_user_id,
+    find_or_create_bot_user,
     load_readyscript_script,
 )
 
@@ -116,3 +120,27 @@ def test_cancel_order_calls_protected_module_method_with_customer_identity() -> 
             "platform_user_id": "123",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_duplicate_phone_does_not_stop_sync_or_link_order_to_random_user(caplog) -> None:
+    first = object()
+    second = object()
+    session = AsyncMock()
+    result = Mock()
+    result.scalars.return_value = iter((first, second))
+    session.execute.return_value = result
+
+    user = await find_or_create_bot_user(
+        session,
+        {
+            "platform": None,
+            "platform_user_id": None,
+            "phone": "79019001561",
+            "email": None,
+        },
+        {},
+    )
+
+    assert user is None
+    assert "ambiguous phone=79019001561: 2 bot users match" in caplog.text
