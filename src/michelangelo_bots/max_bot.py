@@ -33,6 +33,10 @@ from michelangelo_bots.tracking import UserSnapshot, track_interaction
 logger = logging.getLogger(__name__)
 DEFAULT_RATE_LIMIT_SLEEP_SECONDS = 60.0
 MAX_RATE_LIMIT_SLEEP_SECONDS = 300.0
+# A connect timeout happens before MAX receives the request, so retrying it
+# cannot create a duplicate message.  Do not retry read/write timeouts here:
+# MAX may already have accepted those requests.
+MAX_SEND_CONNECT_RETRY_DELAYS = (1.0, 3.0)
 
 
 def max_keyboard(
@@ -116,13 +120,26 @@ class MaxClient:
         *,
         recipient_type: str = "chat_id",
     ) -> None:
-        response = await self._client.post(
-            "/messages",
-            params={recipient_type: recipient_id},
-            headers=self._auth_headers,
-            json={"text": text, "attachments": attachments},
-        )
-        response.raise_for_status()
+        for attempt, delay in enumerate((*MAX_SEND_CONNECT_RETRY_DELAYS, None), start=1):
+            try:
+                response = await self._client.post(
+                    "/messages",
+                    params={recipient_type: recipient_id},
+                    headers=self._auth_headers,
+                    json={"text": text, "attachments": attachments},
+                )
+                response.raise_for_status()
+                return
+            except httpx.ConnectTimeout:
+                if delay is None:
+                    raise
+                logger.warning(
+                    "MAX send_message connection timed out (attempt %s/%s); retrying in %s s",
+                    attempt,
+                    len(MAX_SEND_CONNECT_RETRY_DELAYS) + 1,
+                    delay,
+                )
+                await asyncio.sleep(delay)
 
     async def upload_attachment(
         self,

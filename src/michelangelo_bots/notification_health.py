@@ -315,6 +315,14 @@ async def deliver_system_message(
                         [],
                         recipient_type=target.recipient_type,
                     )
+            except httpx.ConnectTimeout:
+                # MaxClient already retried this safe-to-repeat failure. Keep
+                # the health worker alive and avoid a full traceback on every
+                # scheduled retry when the MAX endpoint is temporarily down.
+                logger.warning(
+                    "MAX connection timed out while sending system alert to %s",
+                    target.key,
+                )
             except Exception:
                 logger.exception("Could not send system alert to %s", target.key)
             else:

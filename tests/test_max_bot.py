@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
@@ -287,6 +289,53 @@ async def test_max_client_can_send_message_to_user_id() -> None:
     assert captured_request is not None
     assert "user_id=456" in str(captured_request.url)
     assert "chat_id" not in str(captured_request.url)
+
+
+@pytest.mark.asyncio
+async def test_max_client_retries_connect_timeout_without_duplicate_on_success(monkeypatch) -> None:
+    calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectTimeout("MAX is unavailable")
+        return httpx.Response(200, json={})
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(max_bot.asyncio, "sleep", sleep)
+    http_client = httpx.AsyncClient(
+        base_url="https://botapi.max.ru",
+        transport=httpx.MockTransport(handler),
+    )
+    client = MaxClient(token="token", base_url="https://botapi.max.ru", http_client=http_client)
+
+    await client.send_message(123, "hello", [])
+
+    assert calls == 2
+    sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.asyncio
+async def test_max_client_stops_after_connect_timeout_retry_limit(monkeypatch) -> None:
+    calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectTimeout("MAX is unavailable")
+
+    monkeypatch.setattr(max_bot.asyncio, "sleep", AsyncMock())
+    http_client = httpx.AsyncClient(
+        base_url="https://botapi.max.ru",
+        transport=httpx.MockTransport(handler),
+    )
+    client = MaxClient(token="token", base_url="https://botapi.max.ru", http_client=http_client)
+
+    with pytest.raises(httpx.ConnectTimeout):
+        await client.send_message(123, "hello", [])
+
+    assert calls == 3
 
 
 @pytest.mark.asyncio
