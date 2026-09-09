@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -21,6 +22,7 @@ from michelangelo_bots.bot_configuration import (
     render_template,
     setting,
 )
+from michelangelo_bots.bot_flow import flow_buttons, flow_message, photo_path
 from michelangelo_bots.config import get_settings
 from michelangelo_bots.content import (
     Action,
@@ -79,10 +81,44 @@ def is_telegram_direct_link(url: str) -> bool:
     return host in {"t.me", "telegram.me"}
 
 
+async def send_flow_message(message: Message, action: str, name: str | None) -> bool:
+    async with get_session_factory()() as session:
+        node = await flow_message(session, "telegram", action)
+    if node is None:
+        return False
+    keyboard = telegram_keyboard(flow_buttons(node)) if node.buttons else None
+    text = render_start_template(node.text, name)
+    if node.photo:
+        photo = FSInputFile(photo_path(get_settings().uploads_dir, node.photo))
+        if len(text.encode("utf-16-le")) // 2 <= 1024:
+            await message.answer_photo(photo, caption=text or None, reply_markup=keyboard)
+            return True
+        await message.answer_photo(photo)
+    # Personalized names can push a message beyond the platform limit.
+    while len(text.encode("utf-16-le")) // 2 > 4096:
+        chunk = text[:2000]
+        await message.answer(chunk)
+        text = text[len(chunk) :]
+    await message.answer(text, reply_markup=keyboard)
+    return True
+
+
+@router.callback_query(F.data.startswith("flow:"))
+async def handle_flow_callback(callback: CallbackQuery) -> None:
+    await track_telegram_callback(callback, action=callback.data or "flow")
+    await callback.answer()
+    if callback.message:
+        await send_flow_message(
+            callback.message, callback.data or "main_menu", telegram_display_name(callback)
+        )
+
+
 @router.message(CommandStart())
 async def handle_start(message: Message) -> None:
     settings = get_settings()
     await track_telegram_message(message, action=Action.MAIN_MENU.value)
+    if await send_flow_message(message, "main_menu", telegram_display_name(message)):
+        return
     async with get_session_factory()() as session:
         buttons = await menu_buttons(session, "telegram", str(settings.telegram_miniapp_url))
         start_text = await setting(session, "start_text")
@@ -168,6 +204,11 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
     action = Action(callback.data)
     settings = get_settings()
     await track_telegram_callback(callback, action=action.value)
+    if callback.message and await send_flow_message(
+        callback.message, action.value, telegram_display_name(callback)
+    ):
+        await callback.answer()
+        return
     if action is Action.MAIN_MENU:
         async with get_session_factory()() as session:
             buttons = await menu_buttons(session, "telegram", str(settings.telegram_miniapp_url))
@@ -190,6 +231,11 @@ async def handle_menu_callback(callback: CallbackQuery) -> None:
 async def handle_configured_menu_callback(callback: CallbackQuery) -> None:
     action = callback.data or ""
     await track_telegram_callback(callback, action=action)
+    if callback.message and await send_flow_message(
+        callback.message, action, telegram_display_name(callback)
+    ):
+        await callback.answer()
+        return
     async with get_session_factory()() as session:
         body = await menu_response(session, action, "telegram")
     if body is not None and callback.message:
@@ -201,9 +247,7 @@ async def handle_configured_menu_callback(callback: CallbackQuery) -> None:
 async def handle_unknown_message(message: Message) -> None:
     settings = get_settings()
     user = await track_telegram_message(message, action="unknown_message")
-    if str(message.chat.id) in parse_recipient_ids(
-        settings.order_notification_telegram_chat_ids
-    ):
+    if str(message.chat.id) in parse_recipient_ids(settings.order_notification_telegram_chat_ids):
         return
     await notify_admins_about_telegram_message(message, user, settings)
     async with get_session_factory()() as session:

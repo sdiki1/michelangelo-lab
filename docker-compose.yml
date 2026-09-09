@@ -22,6 +22,8 @@ services:
       - path: .env
         required: false
     command: michelangelo-telegram-bot
+    volumes:
+      - uploads-data:/app/uploads:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,6 +35,8 @@ services:
       - path: .env
         required: false
     command: michelangelo-max-bot
+    volumes:
+      - uploads-data:/app/uploads:ro
     depends_on:
       postgres:
         condition: service_healthy

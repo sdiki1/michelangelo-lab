@@ -102,8 +102,8 @@ Telegram/MAX User ID и выбрать платформу. Это защищае
 
 ### Bot settings and customer notifications
 
-`/bot-settings` manages the shared Telegram/MAX menu, response pages, administrator
-order/inbox templates, customer order confirmations, CDEK status messages and manager links.
+`/bot-settings` manages administrator order/inbox templates, customer order confirmations,
+CDEK status messages and manager links. The message menu is managed in `/bot-builder`.
 The ReadyScript synchronization worker sends a confirmation for each new linked order and
 then sends one customer notification for every newly observed delivery status. Existing orders
 are baselined during the first run, so deploying this version does not generate an old-order burst.
@@ -125,6 +125,39 @@ X-ReadyScript-Secret: <READYSCRIPT_WEBHOOK_SECRET>
 
 The JSON body accepts `client_id`, `text`, `photo_urls`, customer contact fields and an optional
 `reply_url`. The latter is used by the administrator-channel reply button for website clients.
+
+### Визуальный конструктор бота
+
+`/bot-builder` — схема сообщений и переходов, отдельно для Telegram и MAX.
+Каждый блок содержит текст, одно необязательное фото (JPEG/PNG до 10 МБ)
+и инлайн-кнопки. Кнопка ведёт к другому блоку или открывает HTTPS-ссылку,
+в том числе мини-приложение. Блоки можно перемещать, менять стартовое сообщение,
+соединять кружок кнопки с блоком или выбирать переход в списке справа.
+«Проверить сценарий» позволяет пройти ветки без отправки сообщений клиентам.
+
+При первом запуске обновлённой админки текущее приветствие, активные кнопки,
+настроенные ответы и стандартные разделы автоматически переносятся в схему
+каждого мессенджера. Существующие настройки остаются в базе; повторный запуск
+не перезаписывает схемы. Старые callback-кнопки продолжают работать.
+Уведомления о заказах, отмена заказов и переписка с менеджером работают отдельно.
+
+«Сохранить черновик» сохраняет работу без изменения действующего бота.
+«Опубликовать» применяет схему к следующим сообщениям без перезапуска ботов.
+Сохранение проверяет переходы и наличие фото; конфликт изменений из двух вкладок
+возвращает ошибку, вместо того чтобы затереть чужую работу. Для возврата к прежнему
+сценарию можно восстановить записи `flow_<platform>_live` и `flow_<platform>_draft`
+из резервной копии `bot_settings`.
+
+Для установки обновите код и пересоберите три сервиса:
+
+```bash
+docker compose up -d --build admin telegram-bot max-bot
+```
+
+Все три сервиса должны использовать один `UPLOADS_DIR`: в compose подключён
+общий том `uploads-data`, у ботов — только для чтения. Загруженные фото доступны
+в браузере только после входа в админку. Для Telegram текст длиннее 1024 символов
+отправляется после фото отдельным сообщением с кнопками.
 
 ### Chat with clients
 

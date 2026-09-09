@@ -1,0 +1,690 @@
+<style>
+  .flow-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .flow-toolbar select {
+    width: 145px;
+  }
+  .flow-toolbar button {
+    white-space: nowrap;
+  }
+  .flow-status {
+    margin-left: auto;
+    font-size: 13px;
+    color: #65718a;
+  }
+  .flow-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 330px;
+    border: 1px solid #dce3ef;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #fff;
+    height: calc(100vh - 240px);
+    min-height: 560px;
+  }
+  .flow-viewport {
+    overflow: auto;
+    background-color: #f3f6fb;
+    background-image: radial-gradient(#ccd5e5 1px, transparent 1px);
+    background-size: 20px 20px;
+    position: relative;
+  }
+  .flow-board {
+    position: relative;
+    width: 2500px;
+    height: 2200px;
+    transform-origin: 0 0;
+  }
+  .flow-board svg {
+    position: absolute;
+    inset: 0;
+    overflow: visible;
+    pointer-events: none;
+    width: 100%;
+    height: 100%;
+  }
+  .flow-node {
+    position: absolute;
+    width: 250px;
+    border: 1px solid #d5deed;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 5px 18px #2539540a;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .flow-node.selected {
+    border: 2px solid #5364ff;
+    box-shadow: 0 0 0 3px #5364ff18;
+  }
+  .flow-node header {
+    padding: 12px 14px;
+    background: #f8f9ff;
+    border-bottom: 1px solid #edf0f7;
+    font-weight: 700;
+    cursor: grab;
+    touch-action: none;
+  }
+  .flow-node header:active {
+    cursor: grabbing;
+  }
+  .flow-node .snippet {
+    padding: 12px 14px;
+    white-space: pre-wrap;
+    height: 86px;
+    overflow: hidden;
+    color: #67718a;
+    font-size: 12px;
+  }
+  .flow-node .node-button {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid #edf0f7;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #4353d6;
+    gap: 8px;
+  }
+  .flow-node .port {
+    border: 2px solid #6877fa;
+    border-radius: 50%;
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    background: #fff;
+    cursor: crosshair;
+  }
+  .flow-node .port:hover {
+    background: #6877fa;
+  }
+  .flow-inspector {
+    padding: 20px;
+    overflow: auto;
+    border-left: 1px solid #dce3ef;
+  }
+  .flow-inspector h3 {
+    margin: 0 0 16px;
+  }
+  .flow-inspector label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 12px 0 5px;
+  }
+  .flow-inspector input,
+  .flow-inspector select,
+  .flow-inspector textarea {
+    width: 100%;
+    font: inherit;
+  }
+  .flow-inspector textarea {
+    resize: vertical;
+    min-height: 160px;
+  }
+  .flow-inspector .button-edit {
+    padding: 10px;
+    margin: 10px 0;
+    background: #f5f7fb;
+    border: 1px solid #e0e6f1;
+    border-radius: 8px;
+  }
+  .flow-inspector button {
+    margin-top: 8px;
+  }
+  .flow-inspector img {
+    max-width: 100%;
+    max-height: 180px;
+    border-radius: 8px;
+    margin-top: 8px;
+  }
+  .flow-secondary {
+    background: #fff !important;
+    color: #465571 !important;
+    border: 1px solid #d5deed !important;
+  }
+  .flow-danger {
+    background: #fff !important;
+    color: #c23d53 !important;
+    border: 1px solid #efc7cf !important;
+  }
+  .flow-help {
+    color: #737e94;
+    font-size: 12px;
+    margin: 10px 0;
+  }
+  .flow-error {
+    color: #b22f48 !important;
+  }
+  .flow-preview {
+    background: #edf2f8;
+    border-radius: 12px;
+    padding: 16px;
+    min-height: 140px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .flow-preview button {
+    display: block;
+    width: 100%;
+    white-space: normal;
+  }
+  .flow-preview img {
+    max-width: 100%;
+  }
+  @media (max-width: 1000px) {
+    .flow-shell {
+      grid-template-columns: minmax(0, 1fr) 280px;
+    }
+  }
+  @media (max-width: 700px) {
+    .flow-shell {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+    .flow-viewport {
+      height: 460px;
+    }
+    .flow-inspector {
+      border-left: 0;
+      border-top: 1px solid #dce3ef;
+    }
+    .flow-status {
+      margin-left: 0;
+    }
+  }
+</style>
+<div class="flow-toolbar">
+  <select id="flow-platform" aria-label="Мессенджер">
+    <option value="telegram">Telegram</option>
+    <option value="max">MAX</option>
+  </select>
+  <button id="flow-add" class="flow-secondary">＋ Сообщение</button>
+  <button id="flow-zoom-out" class="flow-secondary" aria-label="Уменьшить">
+    −
+  </button>
+  <span id="flow-zoom">100%</span>
+  <button id="flow-zoom-in" class="flow-secondary" aria-label="Увеличить">
+    ＋
+  </button>
+  <button id="flow-preview-toggle" class="flow-secondary">
+    Проверить сценарий
+  </button>
+  <span id="flow-status" class="flow-status" role="status">Загрузка…</span>
+  <button id="flow-save" class="flow-secondary">Сохранить черновик</button>
+  <button id="flow-publish">Опубликовать</button>
+</div>
+<p class="flow-help">
+  Перетаскивайте блоки за заголовок. Для перехода выберите сообщение в
+  настройках кнопки или нажмите кружок справа от кнопки, затем нужный блок.
+  Изменения вступают в силу после публикации.
+</p>
+<div class="flow-shell">
+  <div class="flow-viewport" id="flow-viewport">
+    <div class="flow-board" id="flow-board"></div>
+  </div>
+  <aside class="flow-inspector" id="flow-inspector"></aside>
+</div>
+<script>
+  (() => {
+    "use strict";
+    const $ = (id) => document.getElementById(id),
+      board = $("flow-board"),
+      inspector = $("flow-inspector");
+    let flow = null,
+      revision = "",
+      platform = "telegram",
+      selected = null,
+      dirty = false,
+      busy = false,
+      zoom = 1,
+      connection = null,
+      preview = false,
+      previewId = null;
+    const esc = (s) =>
+      String(s ?? "").replace(
+        /[&<>"']/g,
+        (c) =>
+          ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          })[c],
+      );
+    const status = (text, error = false) => {
+      $("flow-status").textContent = text;
+      $("flow-status").classList.toggle("flow-error", error);
+    };
+    const current = () => flow.nodes.find((n) => n.id === selected);
+    function changed() {
+      dirty = true;
+      status("Есть несохранённые изменения");
+      draw();
+    }
+    async function api(url, options) {
+      const r = await fetch(url, options);
+      let data;
+      try {
+        data = await r.json();
+      } catch {
+        throw Error("Сервер недоступен. Попробуйте снова.");
+      }
+      if (!r.ok) {
+        let detail = data.detail;
+        if (Array.isArray(detail))
+          detail = detail
+            .map((e) => `${e.loc.slice(1).join(" → ")}: ${e.msg}`)
+            .join("; ");
+        throw Error(detail || "Не удалось выполнить запрос");
+      }
+      return data;
+    }
+    function lock(value) {
+      busy = value;
+      for (const id of [
+        "flow-platform",
+        "flow-add",
+        "flow-save",
+        "flow-publish",
+      ])
+        $(id).disabled = value;
+      inspector.inert = value;
+      board.inert = value;
+    }
+    async function load() {
+      lock(true);
+      flow = null;
+      board.innerHTML = "";
+      inspector.innerHTML = "";
+      status("Загрузка сценария…");
+      try {
+        const d = await api("/api/bot-flow/" + platform);
+        flow = d.flow;
+        revision = d.revision;
+        selected = flow.start;
+        previewId = flow.start;
+        dirty = false;
+        connection = null;
+        draw();
+        edit();
+        status(d.published ? "Сценарий опубликован" : "Сохранён черновик");
+      } catch (e) {
+        status(e.message, true);
+      } finally {
+        lock(false);
+      }
+    }
+    function draw() {
+      if (!flow) return;
+      board.style.transform = `scale(${zoom})`;
+      board.style.width =
+        Math.max(2000, ...flow.nodes.map((n) => n.x + 600)) + "px";
+      board.style.height =
+        Math.max(1600, ...flow.nodes.map((n) => n.y + 600)) + "px";
+      board.innerHTML =
+        '<svg><defs><marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8c9bc3"/></marker></defs><g id="flow-edges"></g></svg>';
+      for (const n of flow.nodes) {
+        const el = document.createElement("div");
+        el.className = "flow-node" + (n.id === selected ? " selected" : "");
+        el.dataset.node = n.id;
+        el.style.left = n.x + "px";
+        el.style.top = n.y + "px";
+        el.innerHTML =
+          `<header>${n.id === flow.start ? "▶ " : ""}${esc(n.title)}</header><div class="snippet">${n.photo ? "📷 Фото\n" : ""}${esc(n.text || "Фото без подписи")}</div>` +
+          n.buttons
+            .map(
+              (b, i) =>
+                `<div class="node-button"><span>${esc(b.title)}${b.url ? " ↗" : ""}</span>${b.target ? `<span class="port" role="button" tabindex="0" aria-label="Соединить кнопку ${esc(b.title)}" data-port="${i}"></span>` : ""}</div>`,
+            )
+            .join("");
+        el.onclick = (e) => {
+          if (e.target.closest(".port")) return;
+          if (connection) {
+            const source = flow.nodes.find((n) => n.id === connection.id);
+            source.buttons[connection.index].target = n.id;
+            connection = null;
+            selected = source.id;
+            changed();
+            edit();
+            return;
+          }
+          selected = n.id;
+          preview = false;
+          draw();
+          edit();
+        };
+        el.querySelectorAll(".port").forEach((port) => {
+          const begin = (e) => {
+            e.stopPropagation();
+            connection = { id: n.id, index: Number(port.dataset.port) };
+            status(
+              "Нажмите блок, на который должна вести кнопка. Esc — отмена.",
+            );
+          };
+          port.onclick = begin;
+          port.onkeydown = (e) => {
+            if (e.key === "Enter") begin(e);
+          };
+        });
+        el.querySelector("header").onpointerdown = (e) => {
+          if (connection || busy) return;
+          const startX = e.clientX,
+            startY = e.clientY,
+            x = n.x,
+            y = n.y,
+            head = e.currentTarget;
+          head.setPointerCapture(e.pointerId);
+          let moved = false;
+          head.onpointermove = (ev) => {
+            if (
+              Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) <
+                4 &&
+              !moved
+            )
+              return;
+            moved = true;
+            n.x = Math.max(
+              0,
+              Math.min(10000, x + (ev.clientX - startX) / zoom),
+            );
+            n.y = Math.max(
+              0,
+              Math.min(10000, y + (ev.clientY - startY) / zoom),
+            );
+            el.style.left = n.x + "px";
+            el.style.top = n.y + "px";
+            edges();
+          };
+          head.onpointerup = () => {
+            head.onpointermove = null;
+            head.onpointerup = null;
+            if (moved) {
+              dirty = true;
+              status("Есть несохранённые изменения");
+              edges();
+            }
+          };
+        };
+        board.append(el);
+      }
+      edges();
+    }
+    function edges() {
+      const group = $("flow-edges");
+      if (!group) return;
+      group.innerHTML = "";
+      for (const n of flow.nodes) {
+        const source = board.querySelector(`[data-node="${n.id}"]`);
+        n.buttons.forEach((b, i) => {
+          const target = flow.nodes.find((v) => v.id === b.target);
+          if (!target) return;
+          const row = source.querySelectorAll(".node-button")[i];
+          const x = n.x + 250,
+            y = n.y + row.offsetTop + row.offsetHeight / 2,
+            tx = target.x,
+            ty = target.y + 24;
+          const path = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "path",
+          );
+          path.setAttribute(
+            "d",
+            `M ${x} ${y} C ${x + 100} ${y}, ${tx - 100} ${ty}, ${tx} ${ty}`,
+          );
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", "#8c9bc3");
+          path.setAttribute("stroke-width", "2");
+          path.setAttribute("marker-end", "url(#flow-arrow)");
+          group.append(path);
+        });
+      }
+    }
+    function edit() {
+      if (preview) {
+        showPreview();
+        return;
+      }
+      const n = current();
+      if (!n) return;
+      inspector.innerHTML = `<h3>Сообщение</h3><label for="node-title">Название блока</label><input id="node-title" maxlength="100" value="${esc(n.title)}"><label for="node-text">Текст сообщения</label><textarea id="node-text" maxlength="4000" rows="9">${esc(n.text)}</textarea><p class="flow-help">{{name}} — имя клиента. Длинный текст с фото в Telegram придёт отдельным сообщением.</p><label for="node-photo">Одно фото · JPEG или PNG, до 10 МБ</label><input id="node-photo" type="file" accept="image/jpeg,image/png">${n.photo ? `<img src="/media/flow/${esc(n.photo)}" alt="Фото сообщения"><button id="photo-remove" class="flow-secondary">Убрать фото</button>` : ""}<label>Инлайн-кнопки</label><div id="node-buttons"></div><button id="button-add" class="flow-secondary">＋ Кнопка</button><hr><button id="node-start" class="flow-secondary" ${n.id === flow.start ? "disabled" : ""}>${n.id === flow.start ? "▶ Стартовое сообщение" : "Сделать стартовым"}</button><button id="node-delete" class="flow-danger" ${n.id === flow.start ? "disabled" : ""}>Удалить сообщение</button>`;
+      $("node-title").oninput = (e) => {
+        n.title = e.target.value;
+        changed();
+      };
+      $("node-text").oninput = (e) => {
+        n.text = e.target.value;
+        changed();
+      };
+      $("node-photo").onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+          status("Фото должно быть не больше 10 МБ", true);
+          return;
+        }
+        lock(true);
+        try {
+          const data = new FormData();
+          data.append("photo", file);
+          const result = await api("/api/bot-flow-photo", {
+            method: "POST",
+            body: data,
+          });
+          n.photo = result.photo;
+          changed();
+          edit();
+        } catch (error) {
+          status(error.message, true);
+        } finally {
+          lock(false);
+        }
+      };
+      if ($("photo-remove"))
+        $("photo-remove").onclick = () => {
+          n.photo = null;
+          changed();
+          edit();
+        };
+      $("node-start").onclick = () => {
+        flow.start = n.id;
+        changed();
+        edit();
+      };
+      $("node-delete").onclick = () => {
+        const refs = flow.nodes.reduce(
+          (a, v) => a + v.buttons.filter((b) => b.target === n.id).length,
+          0,
+        );
+        if (
+          !confirm(
+            `Удалить «${n.title}»? Кнопок, ведущих сюда: ${refs}. Они тоже будут удалены.`,
+          )
+        )
+          return;
+        flow.nodes = flow.nodes.filter((v) => v.id !== n.id);
+        for (const v of flow.nodes)
+          v.buttons = v.buttons.filter((b) => b.target !== n.id);
+        selected = flow.start;
+        changed();
+        edit();
+      };
+      $("button-add").onclick = () => {
+        if (n.buttons.length >= 30) {
+          status("В одном сообщении можно добавить до 30 кнопок", true);
+          return;
+        }
+        n.buttons.push({
+          title: "Новая кнопка",
+          target: flow.start,
+          url: null,
+          web_app: false,
+        });
+        changed();
+        edit();
+      };
+      for (const [i, b] of n.buttons.entries()) {
+        const box = document.createElement("div");
+        box.className = "button-edit";
+        box.innerHTML = `<label>Название кнопки<input data-field="title" maxlength="128" value="${esc(b.title)}"></label><label>Действие<select data-field="kind"><option value="target" ${b.target ? "selected" : ""}>Перейти к сообщению</option><option value="url" ${b.url ? "selected" : ""}>Открыть ссылку</option></select></label>${b.target ? `<label>Сообщение<select data-field="target">${flow.nodes.map((v) => `<option value="${v.id}" ${v.id === b.target ? "selected" : ""}>${esc(v.title)}</option>`).join("")}</select></label>` : `<label>Ссылка<input data-field="url" type="url" value="${esc(b.url)}" placeholder="https://…"></label><label><input data-field="web_app" type="checkbox" style="width:auto" ${b.web_app ? "checked" : ""}> Мини-приложение</label>`}<button class="flow-danger" data-remove>Удалить кнопку</button>`;
+        box.querySelector('[data-field="title"]').oninput = (e) => {
+          b.title = e.target.value;
+          changed();
+        };
+        box.querySelector('[data-field="kind"]').onchange = (e) => {
+          b.target = e.target.value === "target" ? flow.start : null;
+          b.url = b.target ? null : "https://";
+          b.web_app = false;
+          changed();
+          edit();
+        };
+        for (const key of ["target", "url", "web_app"]) {
+          const input = box.querySelector(`[data-field="${key}"]`);
+          if (input)
+            input[key === "url" ? "oninput" : "onchange"] = (e) => {
+              b[key] = key === "web_app" ? e.target.checked : e.target.value;
+              changed();
+            };
+        }
+        box.querySelector("[data-remove]").onclick = () => {
+          n.buttons.splice(i, 1);
+          changed();
+          edit();
+        };
+        $("node-buttons").append(box);
+      }
+    }
+    function showPreview() {
+      const n =
+        flow.nodes.find((v) => v.id === previewId) ||
+        flow.nodes.find((v) => v.id === flow.start);
+      inspector.innerHTML =
+        '<h3>Проверка сценария</h3><p class="flow-help">Нажимайте кнопки, чтобы пройти сценарий. Сообщения клиентам не отправляются.</p><div class="flow-preview" id="preview-message"></div><button class="flow-secondary" id="preview-reset">Начать сначала</button><button class="flow-secondary" id="preview-close">К редактированию</button>';
+      const panel = $("preview-message");
+      if (n.photo) {
+        const img = document.createElement("img");
+        img.src = "/media/flow/" + n.photo;
+        img.alt = "Фото сообщения";
+        panel.append(img);
+      }
+      const text = document.createElement("div");
+      text.textContent = n.text.replaceAll("{{name}}", "Александр");
+      panel.append(text);
+      for (const b of n.buttons) {
+        const btn = document.createElement("button");
+        btn.className = "flow-secondary";
+        btn.textContent = b.title + (b.url ? " ↗" : "");
+        btn.onclick = () => {
+          if (b.target) {
+            previewId = b.target;
+            showPreview();
+          } else status("Ссылка кнопки: " + b.url);
+        };
+        panel.append(btn);
+      }
+      $("preview-reset").onclick = () => {
+        previewId = flow.start;
+        showPreview();
+      };
+      $("preview-close").onclick = () => {
+        preview = false;
+        edit();
+      };
+    }
+    async function save(publish) {
+      if (!flow || busy) return;
+      lock(true);
+      status(publish ? "Публикация…" : "Сохранение…");
+      try {
+        const d = await api(
+          "/api/bot-flow/" + platform + (publish ? "?publish=true" : ""),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ flow, revision }),
+          },
+        );
+        revision = d.revision;
+        dirty = false;
+        status(
+          publish
+            ? "Опубликовано · бот использует эту схему"
+            : "Черновик сохранён",
+        );
+      } catch (e) {
+        status(e.message, true);
+      } finally {
+        lock(false);
+      }
+    }
+    $("flow-save").onclick = () => save(false);
+    $("flow-publish").onclick = () => save(true);
+    $("flow-add").onclick = () => {
+      if (!flow) return;
+      if (flow.nodes.length >= 200) {
+        status("Можно добавить до 200 сообщений", true);
+        return;
+      }
+      const node = {
+        id: "n_" + crypto.randomUUID().replaceAll("-", ""),
+        title: "Новое сообщение",
+        text: "Текст сообщения",
+        photo: null,
+        buttons: [],
+        x: Math.min(10000, $("flow-viewport").scrollLeft / zoom + 100),
+        y: Math.min(10000, $("flow-viewport").scrollTop / zoom + 100),
+      };
+      flow.nodes.push(node);
+      selected = node.id;
+      preview = false;
+      changed();
+      edit();
+    };
+    $("flow-platform").onchange = (e) => {
+      if (
+        dirty &&
+        !confirm(
+          "Переключить мессенджер? Несохранённые изменения будут потеряны.",
+        )
+      ) {
+        e.target.value = platform;
+        return;
+      }
+      platform = e.target.value;
+      preview = false;
+      load();
+    };
+    function setZoom(value) {
+      zoom = Math.max(0.4, Math.min(1.5, value));
+      $("flow-zoom").textContent = Math.round(zoom * 100) + "%";
+      draw();
+    }
+    $("flow-zoom-in").onclick = () => setZoom(zoom + 0.1);
+    $("flow-zoom-out").onclick = () => setZoom(zoom - 0.1);
+    $("flow-preview-toggle").onclick = () => {
+      if (!flow) return;
+      preview = !preview;
+      previewId = flow.start;
+      edit();
+    };
+    window.addEventListener("beforeunload", (e) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        connection = null;
+        status(dirty ? "Есть несохранённые изменения" : "Переход отменён");
+      }
+    });
+    load();
+  })();
+</script>

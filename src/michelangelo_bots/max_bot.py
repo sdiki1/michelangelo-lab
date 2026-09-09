@@ -17,6 +17,7 @@ from michelangelo_bots.bot_configuration import (
     render_template,
     setting,
 )
+from michelangelo_bots.bot_flow import flow_buttons, flow_message, photo_path
 from michelangelo_bots.config import Settings, get_settings
 from michelangelo_bots.content import (
     Action,
@@ -208,6 +209,37 @@ class MaxBot:
         user = await track_max_interaction(incoming, action=action_value, raw_update=update)
         if is_admin_channel_message(incoming, self._settings):
             return
+        flow_action = incoming.payload or action.value
+        if not is_customer_question(incoming) and (
+            flow_action in {a.value for a in Action} or flow_action.startswith(("flow:", "config:"))
+        ):
+            async with get_session_factory()() as session:
+                node = await flow_message(session, "max", flow_action)
+            if node is not None:
+                recipient = outgoing_recipient_id(incoming)
+                if incoming.callback_id:
+                    await self._client.answer_callback(incoming.callback_id)
+                if recipient is None:
+                    return
+                attachments = (
+                    max_keyboard(flow_buttons(node), web_app=self._web_app) if node.buttons else []
+                )
+                if node.photo:
+                    path = photo_path(self._settings.uploads_dir, node.photo)
+                    media = await self._client.upload_attachment(
+                        kind="photo",
+                        filename=path.name,
+                        content=path.read_bytes(),
+                        content_type="image/png" if path.suffix == ".png" else "image/jpeg",
+                    )
+                    attachments.append(media)
+                await self._client.send_message(
+                    recipient,
+                    render_start_template(node.text, max_display_name(incoming)),
+                    attachments=attachments,
+                    recipient_type=outgoing_recipient_type(incoming),
+                )
+                return
         if incoming.payload and incoming.payload.startswith("order_cancel:"):
             if incoming.callback_id:
                 await self._client.answer_callback(incoming.callback_id)

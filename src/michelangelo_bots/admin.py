@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import secrets
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -30,10 +31,19 @@ from fastapi.responses import (
 )
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Select, desc, func, select
+from sqlalchemy import Select, desc, func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from michelangelo_bots.bot_configuration import DEFAULT_SETTINGS, all_settings
+from michelangelo_bots.bot_flow import (
+    Flow,
+    Platform,
+    encoded_flow,
+    ensure_flows,
+    flow_key,
+    photo_path,
+)
 from michelangelo_bots.broadcasting import send_broadcast
 from michelangelo_bots.chat import (
     ChatAttachment,
@@ -54,6 +64,7 @@ from michelangelo_bots.db import (
     OrderStatusNotification,
     datetime_now,
     get_session,
+    get_session_factory,
     init_db,
 )
 from michelangelo_bots.inbound_notifications import notify_admins_about_incoming
@@ -105,6 +116,8 @@ class SiteMessagePayload(BaseModel):
 @app.on_event("startup")
 async def startup() -> None:
     await init_db()
+    async with get_session_factory()() as session:
+        await ensure_flows(session, get_settings())
 
 
 def require_admin(
@@ -389,24 +402,132 @@ async def broadcasts(
     )
 
 
+class FlowSave(BaseModel):
+    flow: Flow
+    revision: str
+
+
+def flow_revision(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+@app.get("/bot-builder", response_class=HTMLResponse)
+async def bot_builder_page(_: Annotated[str, Depends(require_admin)]) -> str:
+    return page("Конструктор", Path(__file__).with_name("flow_editor.html").read_text())
+
+
+@app.get("/api/bot-flow/{platform}")
+async def get_bot_flow(
+    platform: Platform,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    draft_key = flow_key(platform, "draft")
+    draft = await session.get(BotSetting, draft_key)
+    if draft is None:
+        await ensure_flows(session, settings)
+        draft = await session.get(BotSetting, draft_key)
+    live = await session.get(BotSetting, flow_key(platform))
+    return {
+        "flow": json.loads(draft.value),
+        "revision": flow_revision(draft.value),
+        "published": live is not None and live.value == draft.value,
+    }
+
+
+@app.put("/api/bot-flow/{platform}")
+async def save_bot_flow(
+    platform: Platform,
+    payload: FlowSave,
+    _: Annotated[str, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    publish: bool = False,
+):
+    draft = await session.get(BotSetting, flow_key(platform, "draft"))
+    if draft is None or flow_revision(draft.value) != payload.revision:
+        raise HTTPException(
+            409, "Схему изменили в другом окне. Обновите страницу перед сохранением."
+        )
+    for node in payload.flow.nodes:
+        if node.photo and not photo_path(settings.uploads_dir, node.photo).is_file():
+            raise HTTPException(
+                422, f"Фото блока «{node.title}» не найдено. Загрузите его повторно."
+            )
+    value = encoded_flow(payload.flow)
+    result = await session.execute(
+        update(BotSetting)
+        .where(BotSetting.key == draft.key, BotSetting.value == draft.value)
+        .values(value=value, updated_at=datetime_now())
+    )
+    if result.rowcount != 1:
+        await session.rollback()
+        raise HTTPException(409, "Схему изменили в другом окне. Обновите страницу.")
+    if publish:
+        await session.execute(
+            insert(BotSetting)
+            .values(key=flow_key(platform), value=value)
+            .on_conflict_do_update(
+                index_elements=["key"], set_={"value": value, "updated_at": datetime_now()}
+            )
+        )
+    await session.commit()
+    return {"revision": flow_revision(value), "published": publish}
+
+
+@app.post("/api/bot-flow-photo")
+async def upload_flow_photo(
+    _: Annotated[str, Depends(require_admin)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    photo: Annotated[UploadFile, File()],
+):
+    data = await photo.read(10 * 1024 * 1024 + 1)
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Фото должно быть не больше 10 МБ")
+    suffix = (
+        "jpg"
+        if data.startswith(b"\xff\xd8\xff")
+        else "png"
+        if data.startswith(b"\x89PNG\r\n\x1a\n")
+        else None
+    )
+    if suffix is None:
+        raise HTTPException(422, "Загрузите фото в формате JPEG или PNG")
+    filename = f"{uuid4().hex}.{suffix}"
+    path = photo_path(settings.uploads_dir, filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return {"photo": filename}
+
+
+@app.get("/media/flow/{filename}")
+async def flow_photo(
+    filename: str,
+    _: Annotated[str, Depends(require_admin)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        path = photo_path(settings.uploads_dir, filename)
+    except ValueError as exc:
+        raise HTTPException(404) from exc
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path)
+
+
 @app.get("/bot-settings", response_class=HTMLResponse)
 async def bot_settings_page(
     _: Annotated[str, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> str:
     values = await all_settings(session)
-    menu = list(
-        (
-            await session.execute(
-                select(BotMenuItem).order_by(BotMenuItem.position, BotMenuItem.id)
-            )
-        ).scalars()
-    )
     template_fields = "".join(
         f"<label>{e(label)}<textarea name=\"{e(key)}\" rows=\"{rows}\">"
         f"{e(values[key])}</textarea></label>"
         for key, label, rows in (
-            ("start_text", "Приветствие и главное меню", 14),
             ("admin_order_template", "Уведомление администраторам о заказе", 10),
             ("admin_incoming_template", "Входящее сообщение клиента", 9),
             ("customer_order_template", "Подтверждение заказа клиенту", 8),
@@ -427,12 +548,12 @@ async def bot_settings_page(
             ("max_manager_url", "Ссылка на менеджера в MAX", 2),
         )
     )
-    menu_rows = "".join(menu_item_editor(item) for item in menu)
     return page(
         "Настройки ботов",
         f"""
         <article>
           <h2>Шаблоны сообщений</h2>
+          <p>Меню и приветствие после переноса редактируются в <a href="/bot-builder">конструкторе бота</a>. Здесь остаются настройки уведомлений.</p>
           <p class="muted">Доступные переменные: {{order_number}}, {{source}}, {{status}},
           {{status_title}}, {{amount}}, {{customer_name}}, {{customer_phone}},
           {{customer_email}}, {{username}}, {{platform_user_id}}, {{items}}, {{message}}.</p>
@@ -441,14 +562,6 @@ async def bot_settings_page(
             <button>Сохранить шаблоны</button>
           </form>
         </article>
-        <article>
-          <h2>Добавить кнопку</h2>
-          <form class="menu-editor" method="post" action="/bot-settings/menu">
-            {menu_editor_fields()}
-            <button>Добавить</button>
-          </form>
-        </article>
-        <section class="menu-list">{menu_rows or '<p class="muted">Используется стандартное меню. Добавьте первую кнопку, чтобы включить настраиваемое меню.</p>'}</section>
         """,
     )
 
@@ -1278,6 +1391,7 @@ def page(title: str, body: str) -> str:
             "Импорт пользователей",
             "Безопасный перенос клиентской базы из старой админки",
         ),
+        "Конструктор": ("Конструктор", "Сценарии сообщений и переходов Telegram/MAX"),
         "Настройки ботов": ("Настройки", "Тексты, уведомления и меню Telegram/MAX"),
     }
     default_meta = ("Пользователи", "Профиль, заказы и история взаимодействий пользователя")
@@ -1296,6 +1410,7 @@ def page(title: str, body: str) -> str:
             ("Рассылки", "/broadcasts", "mail"),
             ("Путь клиента", "/client-paths", "route"),
             ("Пользователи", "/users", "user"),
+            ("Конструктор", "/bot-builder", "route"),
             ("Настройки", "/bot-settings", "settings"),
         )
     )

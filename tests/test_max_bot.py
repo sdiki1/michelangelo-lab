@@ -193,7 +193,10 @@ async def test_max_bot_returns_sender_user_id_for_getmyid() -> None:
     ]
 
 @pytest.mark.asyncio
-async def test_max_bot_sends_about_for_callback() -> None:
+async def test_max_bot_sends_about_for_callback(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(max_bot, "flow_message", AsyncMock(return_value=None))
     client = FakeMaxClient()
     settings = Settings(
         TELEGRAM_BOT_TOKEN="",
