@@ -140,10 +140,13 @@ async def test_max_flow_sends_uploaded_photo_and_transition(monkeypatch, tmp_pat
             }
         }
     )
-    client.answer_callback.assert_awaited_once_with("cb")
-    attachments = client.send_message.call_args.kwargs["attachments"]
+    client.answer_callback.assert_awaited_once()
+    callback_id, text, attachments = client.answer_callback.call_args.args
+    assert callback_id == "cb"
+    assert text == "Привет, дорогой друг!"
     assert attachments[0]["payload"]["buttons"][0][0]["payload"] == "flow:delivery"
     assert attachments[1]["type"] == "image"
+    client.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -161,4 +164,5 @@ async def test_max_terminal_message_has_no_empty_keyboard(monkeypatch):
             }
         }
     )
-    assert client.send_message.call_args.kwargs["attachments"] == []
+    client.answer_callback.assert_awaited_once_with("cb", "Спасибо!", [])
+    client.send_message.assert_not_awaited()

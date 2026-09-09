@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -5,7 +6,7 @@ import pytest
 
 from michelangelo_bots import max_bot
 from michelangelo_bots.config import Settings
-from michelangelo_bots.content import ABOUT_TEXT, Action, MenuButton
+from michelangelo_bots.content import ABOUT_TEXT, Action, MenuButton, back_to_main_buttons
 from michelangelo_bots.max_bot import (
     IncomingMessage,
     MaxBot,
@@ -37,8 +38,8 @@ class FakeMaxClient:
     ):
         self.messages.append((recipient_id, text, attachments, recipient_type))
 
-    async def answer_callback(self, callback_id: str) -> None:
-        self.answers.append(callback_id)
+    async def answer_callback(self, callback_id: str, text: str, attachments) -> None:  # noqa: ANN001
+        self.answers.append((callback_id, text, attachments))
 
 
 def test_max_keyboard_builds_callback_and_open_app_buttons() -> None:
@@ -218,10 +219,33 @@ async def test_max_bot_sends_about_for_callback(monkeypatch) -> None:
         }
     )
 
-    assert client.messages[0][0] == 123
-    assert client.messages[0][1] == ABOUT_TEXT
-    assert client.messages[0][3] == "chat_id"
-    assert client.answers == ["cb-1"]
+    assert client.messages == []
+    assert client.answers == [("cb-1", ABOUT_TEXT, max_keyboard(back_to_main_buttons()))]
+
+
+@pytest.mark.asyncio
+async def test_max_client_callback_answer_includes_required_message() -> None:
+    captured_request: httpx.Request | None = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_request
+        captured_request = request
+        return httpx.Response(200, json={"success": True})
+
+    http_client = httpx.AsyncClient(
+        base_url="https://botapi.max.ru",
+        transport=httpx.MockTransport(handler),
+    )
+    client = MaxClient(token="token", base_url="https://botapi.max.ru", http_client=http_client)
+
+    await client.answer_callback("callback-1", "Следующее сообщение", [])
+
+    assert captured_request is not None
+    assert captured_request.url.path == "/answers"
+    assert captured_request.url.params["callback_id"] == "callback-1"
+    assert json.loads(captured_request.content) == {
+        "message": {"text": "Следующее сообщение", "attachments": []}
+    }
 
 
 def test_unknown_text_returns_main_menu() -> None:

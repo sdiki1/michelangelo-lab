@@ -176,12 +176,24 @@ class MaxClient:
         uploaded.raise_for_status()
         return max_attachment_from_upload(upload_type, upload_response_payload(uploaded))
 
-    async def answer_callback(self, callback_id: str) -> None:
+    async def answer_callback(
+        self,
+        callback_id: str,
+        text: str,
+        attachments: list[dict[str, Any]],
+    ) -> None:
+        """Replace the callback message with the next bot response.
+
+        MAX requires ``message`` or ``notification`` in every callback answer.
+        The current API requires a message, so an empty ``{}`` is rejected with
+        ``proto.payload``.  Editing the message also keeps a scenario compact:
+        one button press produces one updated screen instead of two messages.
+        """
         response = await self._client.post(
             "/answers",
             params={"callback_id": callback_id},
             headers=self._auth_headers,
-            json={},
+            json={"message": {"text": text, "attachments": attachments}},
         )
         response.raise_for_status()
 
@@ -218,7 +230,6 @@ class MaxBot:
             )
             return
 
-        callback_answered = False
         action = action_from_incoming(incoming)
         action_value = incoming.payload or (
             "unknown_message" if is_customer_question(incoming) else action.value
@@ -233,11 +244,6 @@ class MaxBot:
             async with get_session_factory()() as session:
                 node = await flow_message(session, "max", flow_action)
             if node is not None:
-                recipient = outgoing_recipient_id(incoming)
-                if incoming.callback_id:
-                    await self._client.answer_callback(incoming.callback_id)
-                if recipient is None:
-                    return
                 attachments = (
                     max_keyboard(flow_buttons(node), web_app=self._web_app) if node.buttons else []
                 )
@@ -250,17 +256,26 @@ class MaxBot:
                         content_type="image/png" if path.suffix == ".png" else "image/jpeg",
                     )
                     attachments.append(media)
-                await self._client.send_message(
-                    recipient,
-                    render_start_template(node.text, max_display_name(incoming)),
-                    attachments=attachments,
-                    recipient_type=outgoing_recipient_type(incoming),
-                )
+                response_text = render_start_template(node.text, max_display_name(incoming))
+                if incoming.callback_id:
+                    await self._client.answer_callback(
+                        incoming.callback_id,
+                        response_text,
+                        attachments,
+                    )
+                else:
+                    recipient_id = outgoing_recipient_id(incoming)
+                    if recipient_id is None:
+                        logger.warning("Cannot answer MAX flow without a recipient: %s", update)
+                        return
+                    await self._client.send_message(
+                        recipient_id,
+                        response_text,
+                        attachments=attachments,
+                        recipient_type=outgoing_recipient_type(incoming),
+                    )
                 return
         if incoming.payload and incoming.payload.startswith("order_cancel:"):
-            if incoming.callback_id:
-                await self._client.answer_callback(incoming.callback_id)
-                callback_answered = True
             order_id = callback_order_id(incoming.payload)
             order = (
                 await get_customer_order(order_id, bot_user_id=user.id, platform="max")
@@ -296,9 +311,6 @@ class MaxBot:
                     ]]},
                 }]
         elif incoming.payload and incoming.payload.startswith("order_cancel_confirm:"):
-            if incoming.callback_id:
-                await self._client.answer_callback(incoming.callback_id)
-                callback_answered = True
             order_id = callback_order_id(incoming.payload)
             if order_id is None:
                 response_text = "Этот заказ недоступен."
@@ -340,9 +352,6 @@ class MaxBot:
                         }]]},
                     }]
         elif incoming.payload and incoming.payload.startswith("order_cancel_abort:"):
-            if incoming.callback_id:
-                await self._client.answer_callback(incoming.callback_id)
-                callback_answered = True
             response_text = "Заказ не отменён."
             keyboard = []
         elif is_customer_question(incoming):
@@ -375,21 +384,20 @@ class MaxBot:
                 response_text = render_start_template(start_text, max_display_name(incoming))
             else:
                 keyboard = max_keyboard(back_to_main_buttons())
+        if incoming.callback_id:
+            await self._client.answer_callback(incoming.callback_id, response_text, keyboard)
+            return
+
         recipient_id = outgoing_recipient_id(incoming)
-        recipient_type = outgoing_recipient_type(incoming)
         if recipient_id is None:
             logger.warning("Cannot answer MAX update without chat_id or user_id: %s", update)
             return
-
         await self._client.send_message(
             recipient_id,
             response_text,
             attachments=keyboard,
-            recipient_type=recipient_type,
+            recipient_type=outgoing_recipient_type(incoming),
         )
-
-        if incoming.callback_id and not callback_answered:
-            await self._client.answer_callback(incoming.callback_id)
 
     async def polling(self) -> None:
         marker: int | str | None = None
